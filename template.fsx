@@ -965,13 +965,18 @@ let parseTitle (spans: MarkdownSpans) =
             | _ -> acc
     )
     |> string
+    |> fun s -> s.Trim()
 
 let parseSituations (dice: int seq) (md : MarkdownDocument) = 
     let rec loop id idescalade (edice: IEnumerator<int>) ps result =
         match ps with
-        | Heading(2, title,_) :: Paragraph(txtSituation,_) :: ListBlock(_, items,_) :: tail ->
+        | Heading(2, title,_) :: Paragraph(txtSituation,_) :: tail ->
             
-            let reactions, idescalade = mapFold parseReaction idescalade items
+            let (reactions, idescalade), tail =
+                match tail with
+                | ListBlock(_, items,_) :: rest ->
+                    mapFold parseReaction idescalade items, rest
+                | _ ->  ([], idescalade), tail
             
             let situation =
                 { Id = id
@@ -1090,6 +1095,7 @@ let dice =
     }
 
 let situations = parseSituations dice md
+
 renderSituations situations mundial futura builder
 
 File.WriteAllBytes(@"C:\Users\jchassaing\OneDrive\Transmissions\template\Result.pdf", builder.Build())
@@ -1108,27 +1114,45 @@ File.WriteAllBytes(@"C:\Users\jchassaing\OneDrive\Transmissions\template\Result.
 
 for situation in situations do
     let errors = ResizeArray()
-    if situation.Text = [] then 
-        errors.Add "  texte situation manquant"
-    for i,reaction in situation.Reactions |> Seq.indexed do
-        if reaction.Text = [] then
-            errors.Add $"  [reaction {i+1}] texte manquant"
+
+    let checkRanges name reaction =
         if reaction.Consequences = [] then
-            errors.Add $"  [reaction {i+1}] consequences manquantes"
+            errors.Add $"  [{name}] consequences manquantes"
         let ranges =
             [ for cons in reaction.Consequences do
                 yield! [cons.Range.Min .. cons.Range.Max] ]
         if List.contains 0 ranges then
-            errors.Add $"  [reaction {i+1}] pourcentage non spécifée"
+            errors.Add $"  [{name}] pourcentage non spécifée"
 
         let missing = (set ranges  - set [1..10]) |> Set.remove 0
         if not missing.IsEmpty then
             for n in missing do
-                errors.Add $"  [reaction {i+1}] pourcentage {n} manquant"
+                errors.Add $"  [{name}] pourcentage {n} manquant"
         let multi = ranges |> List.countBy id |> List.filter (fun (c,_) -> c > 1) |> List.map snd
         if not multi.IsEmpty then
             for n in missing do
-                errors.Add $"  [reaction {i+1}] valeur {n} multiple"
+                errors.Add $"  [{name}] valeur {n} multiple"
+
+    if situation.Text = [] then 
+        errors.Add "  texte situation manquant"
+    if situation.Reactions = [] then
+        errors.Add "  reactions manquantes"
+    else
+        for i,reaction in situation.Reactions |> Seq.indexed do
+            if reaction.Text = [] then
+                errors.Add $"  [reaction {i+1}] texte manquant"
+            checkRanges $"reaction {i+1}" reaction
+
+            for cons in reaction.Consequences do
+                match cons.Score with
+                | Escalade(n, es) ->
+                    for escalade in es do
+                        if escalade.Text = [] then
+                            errors.Add $"  [escalade {n}] texte manquant"
+                        checkRanges $"escalade {n}" escalade
+
+                | _ -> ()
+
     if errors.Count = 0 then
         let scores =
             [ for reaction in situation.Reactions do
