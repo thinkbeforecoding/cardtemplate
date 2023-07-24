@@ -809,6 +809,7 @@ module Escalade =
 module Cards =
     type Situation =
         { Id: int 
+          Title: string
           Color: Colors
           Dice: int
           Text: (Style * string) list 
@@ -956,14 +957,25 @@ let parseReaction idescalade ps =
         { Text = toText description
           Consequences = []}, idescalade
 
+let parseTitle (spans: MarkdownSpans) =
+    (System.Text.StringBuilder(), spans)
+    ||> List.fold (fun acc span ->
+            match span with
+            | Literal(text,_)  -> acc.Append text
+            | _ -> acc
+    )
+    |> string
+
 let parseSituations (dice: int seq) (md : MarkdownDocument) = 
     let rec loop id idescalade (edice: IEnumerator<int>) ps result =
         match ps with
-        | Heading(2, _,_) :: Paragraph(txtSituation,_) :: ListBlock(_, items,_) :: tail ->
+        | Heading(2, title,_) :: Paragraph(txtSituation,_) :: ListBlock(_, items,_) :: tail ->
             
             let reactions, idescalade = mapFold parseReaction idescalade items
+            
             let situation =
                 { Id = id
+                  Title = parseTitle title
                   Color = 
                     let id = id%25
                     if id <= 5 then
@@ -1092,3 +1104,50 @@ File.WriteAllBytes(@"C:\Users\jchassaing\OneDrive\Transmissions\template\Result.
 //  |> printOps
 
 // cartes.GetPage(1).Operations |> Seq.toList |> printOps
+
+
+for situation in situations do
+    let errors = ResizeArray()
+    if situation.Text = [] then 
+        errors.Add "  texte situation manquant"
+    for i,reaction in situation.Reactions |> Seq.indexed do
+        if reaction.Text = [] then
+            errors.Add $"  [reaction {i+1}] texte manquant"
+        if reaction.Consequences = [] then
+            errors.Add $"  [reaction {i+1}] consequences manquantes"
+        let ranges =
+            [ for cons in reaction.Consequences do
+                yield! [cons.Range.Min .. cons.Range.Max] ]
+        if List.contains 0 ranges then
+            errors.Add $"  [reaction {i+1}] pourcentage non spécifée"
+
+        let missing = (set ranges  - set [1..10]) |> Set.remove 0
+        if not missing.IsEmpty then
+            for n in missing do
+                errors.Add $"  [reaction {i+1}] pourcentage {n} manquant"
+        let multi = ranges |> List.countBy id |> List.filter (fun (c,_) -> c > 1) |> List.map snd
+        if not multi.IsEmpty then
+            for n in missing do
+                errors.Add $"  [reaction {i+1}] valeur {n} multiple"
+    if errors.Count = 0 then
+        let scores =
+            [ for reaction in situation.Reactions do
+                for cons in reaction.Consequences do
+                    for i in cons.Range.Min .. cons.Range.Max do
+                        match cons.Score with
+                        | Score n -> decimal n
+                        | Escalade(_,es) ->
+                            for reac in es do
+                                for c in reac.Consequences do
+                                    for j in c.Range.Min .. c.Range.Max do
+                                        match c.Score with
+                                        | Score n -> decimal n
+                                        | _ -> failwith "Les doubles escalades ne sont pas gérées"
+             ]
+        let score = scores |> List.average
+
+        printfn "✅ %s (%d réactions) (score %.2f)" situation.Title situation.Reactions.Length score
+    else
+        printfn "❌ %s (%d réactions)" situation.Title situation.Reactions.Length
+        for error in errors do
+            printfn "%s" error
