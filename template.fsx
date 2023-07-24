@@ -97,10 +97,16 @@ let (|InnerText|_|) (ops: IGraphicsStateOperation list) =
         | ShowTextsWithPositioning(_,txt) -> Some txt
         | ShowText(_,txt) -> Some txt
         | _ -> None)
+[<Struct>]
+type Size = 
+    { Width: decimal
+      Height: decimal }
 
 type Font = 
     { Name: NameToken
       Font: IWritingFont }
+
+[<Struct>]
 type Color =
     { R: decimal
       G: decimal
@@ -119,6 +125,11 @@ type TextSpan =
       Font: Font
       Color: Color option }
 
+type Line =
+    { Spans: TextSpan list
+      Size: Size }
+
+      
 let getText (textToFind: string) (ops: IGraphicsStateOperation list) : IGraphicsStateOperation list =
     let rec findStart (ops: IGraphicsStateOperation list)  =
         match ops with
@@ -139,7 +150,7 @@ let getText (textToFind: string) (ops: IGraphicsStateOperation list) : IGraphics
     findStart ops 
 
 
-let changeText (page: PdfPageBuilder) (newTexts: TextSpan list list) (ops: IGraphicsStateOperation list) =
+let changeText (page: PdfPageBuilder) (newTexts: Line list) (ops: IGraphicsStateOperation list) =
     let renderSpans newLine spans =
         match spans with
         | head :: rest ->
@@ -167,13 +178,13 @@ let changeText (page: PdfPageBuilder) (newTexts: TextSpan list list) (ops: IGrap
         | ShowText _ ->
             match newTexts with
             | [line] ->
-                renderSpans false line
+                renderSpans false line.Spans
             | line :: rest ->
                 [
                     SetTextLeading(1m) :> IGraphicsStateOperation
-                    yield! renderSpans false line
+                    yield! renderSpans false line.Spans
                     for line in rest do 
-                        yield! renderSpans true line
+                        yield! renderSpans true line.Spans
                 ]
             | [] -> []
         | op -> [op]
@@ -185,20 +196,20 @@ let getTextMatrix (ops: IGraphicsStateOperation list) =
         | :? SetTextMatrix as op -> Some op.Value
         | _ -> None)
 
-let changeTextCenter (page: PdfPageBuilder) (newTexts: (decimal * TextSpan list) list) (ops: IGraphicsStateOperation list) =
+let changeTextCenter (page: PdfPageBuilder) (newTexts: Line list) (ops: IGraphicsStateOperation list) =
     let pageWidth = decimal page.PageSize.Width
     let m = getTextMatrix ops
     let offset = (m[3] * decimal (newTexts.Length-1)) / 2m
-    let renderSpans newLine line spans =
-        match spans with
-        | w,head :: rest ->
-            let x = (pageWidth - w) / 2m
+    let renderSpans newLine iline line =
+        match line.Spans with
+        | head :: rest ->
+            let x = (pageWidth - line.Size.Width) / 2m
             [   Push.Value :> IGraphicsStateOperation
                 SetFontAndSize(head.Font.Name, 1m) 
                 match head.Color with
                 | Some color -> SetNonStrokeColorDeviceRgb(color.R, color.G, color.B)
                 | None -> ()
-                SetTextMatrix( [| 9m; 0m; 0m; 9m; x; m[5] + offset - decimal line * 9m |])
+                SetTextMatrix( [| m[0]; m[1]; m[2]; m[3]; x; m[5] + offset - decimal iline * m[3] |])
 
                 // if newLine then
                 //     MoveToNextLineShowText(page.UseLetters(head.Text,head.Font.Font))
@@ -213,7 +224,7 @@ let changeTextCenter (page: PdfPageBuilder) (newTexts: (decimal * TextSpan list)
 
                 Pop.Value
             ] 
-        | _,[] -> []
+        | [] -> []
     ops 
     |> List.collect (function
         | ShowTextsWithPositioning(_,_)
@@ -250,11 +261,11 @@ let changeMatrix (f: decimal[] -> decimal[] )  (ops: IGraphicsStateOperation lis
         | op -> op
          )
 
-let getSizeX (ops: IGraphicsStateOperation list) =
+let getSize (ops: IGraphicsStateOperation list) =
     ops 
     |> List.pick (function
         | :? SetTextMatrix as op ->
-            Some op.Value[0]
+            Some { Width = op.Value[0]; Height = op.Value[3] }
         | _ -> None
     )
 
@@ -355,6 +366,11 @@ type PdfPageBuilder with
         { Name = this.GetAddedFont(font)
           Font = this.GetWritingFont(font)}
 
+
+
+
+
+
 type LineContext = 
     { Span: decimal
       Word: decimal
@@ -368,8 +384,9 @@ type LineContext =
       Style: Style
       Fonts: Fonts
       Line: TextSpan list
-      Lines: (decimal * TextSpan list) list
-      Scale: decimal
+      Lines: Line list
+      Scale: Size
+      ParagraphSpacing: decimal
       Max: decimal
     }
 
@@ -379,7 +396,11 @@ module LineContext =
             { Font = Fonts.getStyle ctx.Style.FontStyle ctx.Fonts
               Color = ctx.Style.Color
               Text = ctx.Text.Substring(ctx.StyleStart, ctx.Index - ctx.StyleStart)}
-        ((ctx.Span + ctx.Word, List.rev (sp :: ctx.Line)) :: ctx.Lines)
+        let line = 
+            { Spans = List.rev (sp :: ctx.Line) 
+              Size = { Width = ctx.Span + ctx.Word 
+                       Height = ctx.Scale.Height } }
+        (line :: ctx.Lines)
         |> List.rev
 
     let hasNext ctx =
@@ -421,7 +442,12 @@ module LineContext =
                     { Font = Fonts.getStyle ctx.Style.FontStyle ctx.Fonts
                       Color = ctx.Style.Color
                       Text = ctx.Text.Substring(ctx.StyleStart, ctx.Index - ctx.StyleStart)}
-                (ctx.Span + ctx.Word, List.rev (sp :: ctx.Line)) :: ctx.Lines
+                let line = 
+                    { Spans = List.rev (sp :: ctx.Line)
+                      Size = 
+                        { Width = ctx.Span + ctx.Word
+                          Height = ctx.Scale.Height * ctx.ParagraphSpacing } }
+                line :: ctx.Lines
         }
 
     let addChar w ctx =
@@ -443,7 +469,12 @@ module LineContext =
                     { Font = Fonts.getStyle ctx.Style.FontStyle ctx.Fonts
                       Color = ctx.Style.Color
                       Text = ctx.Text.Substring(start, ctx.WordStart - start)}
-                (ctx.Span, List.rev (sp :: ctx.Line)) :: ctx.Lines
+                let line =
+                    { Spans = List.rev (sp :: ctx.Line)
+                      Size =
+                        { Width = ctx.Span
+                          Height = ctx.Scale.Height} }
+                line :: ctx.Lines
 
         }
 
@@ -464,7 +495,7 @@ module LineContext =
             | true,w -> 
                 let b = PdfRectangle(0,0,w,0)
                 let t = m.Transform(b)
-                ctx.Scale * decimal t.Width
+                ctx.Scale.Width * decimal t.Width
             | false, _ -> 0m 
 
         let ctx2 = applyStyle style ctx 
@@ -486,7 +517,7 @@ let rec split' ctx =
     else
         LineContext.close ctx
 
-let split (f: Fonts) text styles sx max = 
+let split (f: Fonts) text styles scale paragraphSpacing max = 
     let ctx = 
         { Span = 0m
           Word = 0m
@@ -498,7 +529,8 @@ let split (f: Fonts) text styles sx max =
           Styles = styles
           Style = { FontStyle = Regular; Color = None }
           Fonts = f
-          Scale = sx
+          Scale = scale
+          ParagraphSpacing = paragraphSpacing
           Max = max
           Line = []
 
@@ -542,16 +574,16 @@ module Situation =
                     let newTxt = $"SITUATION %d{num}"
                     let ft = getFont ops
                     let f = src.GetFont(ft)
-                    let sizex = getSizeX ops
-                    let orgWidth = sizex * textWidth txt f
-                    let width = sizex * textWidth newTxt f
+                    let size = getSize ops
+                    let orgWidth = size.Width * textWidth txt f
+                    let width = size.Width * textWidth newTxt f
                     let x = (orgWidth - width) / 2m
                     let font = page.GetFont(mundial.Regular)
 
 
                     ops
                     // |> changeFontName (page.GetAddedFont(mundial)) 
-                    |> changeText page [ [ { Text = newTxt; Color = None; Font = font} ] ]
+                    |> changeText page [ { Spans = [ { Text = newTxt; Color = None; Font = font} ]; Size = size} ]
                     |> changeMatrix (translate x 0m)
 
 
@@ -560,14 +592,14 @@ module Situation =
                     let ft = getFont ops
                     let f = src.GetFont(ft)
 
-                    let sizex = getSizeX ops
+                    let size = getSize ops
 
                     let font = { Regular = page.GetFont(futura.Regular)
                                  Italic = page.GetFont(futura.Italic)
                                  Bold = page.GetFont(futura.Bold) }
                     
                     let lines =
-                        split font text styles sizex 180m |> List.map snd
+                        split font text styles size 1.5m 180m
 
                     ops 
                         |> changeText page lines
@@ -594,15 +626,15 @@ module Reaction =
                     let newTxt = $"RÉACTION S%d{num}"
                     let ft = getFont ops
                     let f = src.GetFont(ft)
-                    let sizex = getSizeX ops
-                    let orgWidth = sizex * textWidth txt f
-                    let width = sizex * textWidth newTxt f
+                    let size = getSize ops
+                    let orgWidth = size.Width * textWidth txt f
+                    let width = size.Width * textWidth newTxt f
                     let x = (orgWidth - width) / 2m
                     let font = page.GetFont(mundial.Regular)
 
 
                     ops
-                    |> changeText page [ [ { Text = newTxt; Color = None; Font = font} ] ]
+                    |> changeText page [ { Spans = [  { Text = newTxt; Color = None; Font = font} ]; Size = size } ]
                     |> changeMatrix (translate x 0m)
 
 
@@ -611,14 +643,14 @@ module Reaction =
                     let ft = getFont ops
                     let f = src.GetFont(ft)
 
-                    let sizex = getSizeX ops
+                    let size = getSize ops
 
                     let font = { Regular = page.GetFont(futura.Regular)
                                  Italic = page.GetFont(futura.Italic)
                                  Bold = page.GetFont(futura.Bold) }
                     
                     let lines =
-                        split font text styles sizex 180m 
+                        split font text styles size 1.5m 180m 
 
                     ops 
                         // |> changeMatrix (fun m -> 
@@ -644,28 +676,28 @@ module Reaction =
                     let newTxt = $"RÉACTION S%d{num}"
                     let ft = getFont ops
                     let f = src.GetFont(ft)
-                    let sizex = getSizeX ops
-                    let orgWidth = sizex * textWidth txt f
-                    let width = sizex * textWidth newTxt f
+                    let size = getSize ops
+                    let orgWidth = size.Width * textWidth txt f
+                    let width = size.Width * textWidth newTxt f
                     let x = (orgWidth - width) / 2m
                     let font = page.GetFont(mundial.Regular)
 
 
                     ops
-                    |> changeText page [ [ { Text = newTxt; Color = None; Font = font} ] ]
+                    |> changeText page [ { Spans = [ { Text = newTxt; Color = None; Font = font} ]; Size = size } ]
                     |> changeMatrix (translate x 0m)
 
 
 
                 | ops & InnerText(txt) when txt.StartsWith("2 à 6") ->
-                    let sizex = getSizeX ops
+                    let size = getSize ops
 
                     let font = { Regular = page.GetFont(futura.Regular)
                                  Italic = page.GetFont(futura.Italic)
                                  Bold = page.GetFont(futura.Bold) }
                     
                     let lines =
-                        split font text styles sizex 180m |> List.map snd 
+                        split font text styles size 1.5m 180m 
 
                     ops 
                         |> changeMatrix (fun m -> 
@@ -674,11 +706,13 @@ module Reaction =
                         |> changeText page lines 
                 | ops & InnerText(txt) when txt = "1" ->
                     let font = page.GetFont(mundial.Regular)
-                    ops |> changeText page [[ { Text = $"{reaction}"; Color = None; Font = font} ]]
+                    let size = getSize ops
+                    ops |> changeText page [ { Spans = [ { Text = $"{reaction}"; Color = None; Font = font} ]; Size = size }]
                         |> changeMatrix (translate -2m 0m)
                 | ops & InnerText(txt) when txt = "5" ->
                     let font = page.GetFont(mundial.Regular)
-                    ops |> changeText page [[ { Text = $"{count}"; Color = None; Font = font} ]]
+                    let size = getSize ops
+                    ops |> changeText page [ { Spans = [ { Text = $"{count}"; Color = None; Font = font} ]; Size = size }]
                 | ops & InnerText(txt) when txt = "|" ->
                     ops 
                 | _ -> []
@@ -802,9 +836,6 @@ let situation =
           Text = toText txtSituation
           Reactions = items |> List.map parseReaction }
 
-let (ListBlock(_,lst,_))  = md.Paragraphs[2]
-let (ListBlock(_,d,_)) = lst[0][1]
-d[0][0]
 
 
 let futuraBytes = File.ReadAllBytes(@"C:\Users\jchassaing\OneDrive\Transmissions\Fonts\Futura PT\FuturaPTBook.ttf")
@@ -827,28 +858,6 @@ let futura =
 // Situation.verso 8 builder
 let (++) style color = { FontStyle = style; Color = Some color} 
 let st style = { FontStyle = style; Color = None} 
-// let txt =
-//     [ st Regular, "Il est midi, tu sors acheter du pain à la boulangerie la plus proche. Sur le trajet, c'est un homme qui te dit : "
-//       st Italic,"« Ouais t'es trop belle ! Bisous partout. »\n"
-//       st Bold, "Tu l’ignores et poursuit ton chemin vers la boulangerie. En sortant, tu dois repasser devant lui et il te dit : "
-//       st Italic, "« Tu ne me donnes même pas un bisous ? Viens. »"]
-// Situation.recto 10 mundial futura  txt  builder
-
-
-    
-// Reaction.recto 10 mundial futura [ st Regular, "Je change de place dans l’espoir qu’il ne me suive pas."] builder
-// let conseq =
-//     [ Bold ++ Color.blue, "1 :"
-//       Regular ++ Color.black, " La rame se vide à la station suivante et l’homme reste dans celle-ci mais n’est plus collé à vous.  Il semble que vous vous soyez trompé·e sur ses intentions. Vous vous sentez soulagé·e mais un peu honteux·se. "
-//       Bold ++ Color.red, " (-1)\n\n"
-//       Bold ++ Color.blue, "2 à 6 :"
-//       Regular ++ Color.black, " L’homme insiste et commence à vous toucher, vous écourtez votre voyage et sortez à la station suivante pour lui échapper."
-//       Bold ++ Color.yellow, " (0)\n\n"
-//       Bold ++ Color.blue, "4 à 10 :"
-//       Regular ++ Color.black, " L’homme insiste et commence à vous toucher, vous écourtez votre voyage et sortez à la station suivante pour lui échapper."
-//       Bold ++ Color.green, " (+2)" 
-//       ]
-// Reaction.verso 10 (3,5) mundial futura conseq builder
 
 Situation.verso situation.Dice builder
 Situation.recto situation.Id mundial futura situation.Text builder
@@ -874,20 +883,6 @@ for i, reaction in situation.Reactions |> List.indexed do
             | Escalade n -> Bold ++ Color.blue , $"(voir Escalade %d{n})\n"
         ]
     Reaction.verso situation.Id (i+1, count) mundial futura consequences builder
-
-// let page = builder.AddPage(PageSize.A7)
-// let text, styles =
-//     [ st Regular, "Je prends les courses et les mets dans la poubelle la plus proche en lui disant : "
-//       st Italic, "« Excusez-moi, je les ai salies avec mes sales mains de noir·e ! »" ]
-//     |> extractStyle 
-
-// let fonts =
-//     { Regular = page.GetFont(futura.Regular)
-//       Bold = page.GetFont(futura.Bold)
-//       Italic = page.GetFont(futura.Italic) }
-
-// split fonts text styles 9m 180m
-
 
 
 File.WriteAllBytes(@"C:\Users\jchassaing\OneDrive\Transmissions\template\Result.pdf", builder.Build())
