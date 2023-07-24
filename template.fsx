@@ -6,6 +6,7 @@
 #r "FSharp.Formatting.Common"
 #r "FSharp.Formatting.Markdown"
 open System.IO
+open System.Collections.Generic
 open UglyToad.PdfPig
 open UglyToad.PdfPig.Writer
 open UglyToad.PdfPig.Tokens
@@ -20,6 +21,7 @@ open UglyToad.PdfPig.PdfFonts
 open UglyToad.PdfPig.Writer.Fonts
 open UglyToad.PdfPig.Graphics.Operations.SpecialGraphicsState
 open FSharp.Formatting.Markdown
+open UglyToad.PdfPig.Graphics.Operations.PathConstruction
 
 
 let printOps (ops: IGraphicsStateOperation seq) =
@@ -112,13 +114,29 @@ type Font =
       Font: IWritingFont }
 
 [<Struct>]
-type Color =
+type Rgb =
     { R: decimal
       G: decimal
       B: decimal }
 
+[<Struct>]
+type Cmyk =
+    { C: decimal
+      M: decimal
+      Y: decimal
+      K: decimal }
+    
+type Color =
+    | Rgb of Rgb
+    | Cmyk of Cmyk
+
+type TextColor =
+    | Accent
+    | Color of Color
+    | DefaultColor
+
 module Color =
-    let rgb r g b = {R=r; G=g; B=b}
+    let rgb r g b = Rgb {R=r; G=g; B=b}
     let black = rgb 0m 0m 0m
     let blue = rgb 0.251m 0.51m 0.612m
     let red = rgb 1m 0.19m 0.271m
@@ -128,7 +146,7 @@ module Color =
 type TextSpan = 
     { Text: string
       Font: Font
-      Color: Color option }
+      Color: TextColor }
 
 type Line =
     { Spans: TextSpan list
@@ -164,6 +182,18 @@ let translate x y (m: decimal[]) =
 
 let setPos pos (m: decimal[]) =
     [|m[0]; m[1]; m[2]; m[3]; pos.X; pos.Y |]
+
+let getColor ops =
+    let rec loop (ops: IGraphicsStateOperation list) =
+        match ops with
+        | (:? SetNonStrokeColorDeviceRgb as op) :: (:? AppendRectangle ) :: _ ->
+            Rgb { R = op.R; G = op.G; B = op.B }
+        | (:? SetNonStrokeColorDeviceCmyk as op) :: (:? AppendRectangle ) :: _ ->
+            Cmyk { C = op.C; M = op.M; Y = op.Y; K = op.K }
+        | _ :: tail -> loop tail
+        | [] -> failwith "Color not found"
+    loop ops
+
  
 type VerticalAlign =
     | Top
@@ -175,23 +205,30 @@ type HorizontalAlign =
     | Center
     | Right
 
-let changeText (page: PdfPageBuilder) (lines: Line list) halign valign (ops: IGraphicsStateOperation list) =
+let setColor color =
+    match color with
+    | Rgb color -> SetNonStrokeColorDeviceRgb(color.R, color.G, color.B) :> IGraphicsStateOperation
+    | Cmyk color -> SetNonStrokeColorDeviceCmyk(color.C, color.M, color.Y, color.K)
+
+let changeText (page: PdfPageBuilder) (lines: Line list) halign valign accent (ops: IGraphicsStateOperation list) =
     let renderSpans matrix spans =
         match spans with
         | head :: rest ->
             [
                 SetFontAndSize(head.Font.Name, 1m) :> IGraphicsStateOperation
                 match head.Color with
-                | Some color -> SetNonStrokeColorDeviceRgb(color.R, color.G, color.B)
-                | None -> ()
+                | DefaultColor -> ()
+                | Color color -> setColor color
+                | Accent -> setColor accent
                 
                 SetTextMatrix(matrix)
                 ShowText(page.UseLetters(head.Text,head.Font.Font))
                 for span in rest do
                     SetFontAndSize(span.Font.Name, 1m) :> IGraphicsStateOperation
                     match span.Color with
-                    | Some color -> SetNonStrokeColorDeviceRgb(color.R, color.G, color.B)
-                    | None -> ()
+                    | DefaultColor -> ()
+                    | Color color -> setColor color
+                    | Accent -> setColor accent
                     ShowText(page.UseLetters(span.Text,span.Font.Font))
             ] 
         | [] -> []
@@ -296,7 +333,7 @@ type FontStyle =
 
 type Style =
     { FontStyle: FontStyle
-      Color: Color option}
+      Color: TextColor}
 
 module Fonts =
     let getStyle style fonts =
@@ -466,7 +503,7 @@ let split'' (f: Fonts) text styles scale paragraphSpacing max =
           Index = 0
           Text = setInsec text
           Styles = styles
-          Style = { FontStyle = Regular; Color = None }
+          Style = { FontStyle = Regular; Color = DefaultColor }
           Fonts = f
           Scale = scale
           ParagraphSpacing = paragraphSpacing
@@ -499,28 +536,71 @@ let centerPage (src: Page) ops =
 
     ops |> changeMatrix (setPos { pos with X = decimal bleed.Width / 2m + decimal bleed.Left })
 
-let (++) style color = { FontStyle = style; Color = Some color} 
-let st style = { FontStyle = style; Color = None} 
+let (++) style color = { FontStyle = style; Color = Color color} 
+let st style = { FontStyle = style; Color = DefaultColor} 
+let accent style = { FontStyle = style; Color = Accent} 
 
 
 
-let cartes = PdfDocument.Open(@"C:\Users\jchassaing\OneDrive\Transmissions\template\Transmission(s)_Cartes Situation (Impressions).pdf")
+let cartes = PdfDocument.Open(@"C:\Users\jchassaing\OneDrive\Transmissions\template\Transmission(s)_Cartes Situation (Template).pdf")
 
+type Colors =
+    | Blue
+    | Red
+    | Yellow
+    | Purple
+    | Green
+
+type CardType =
+    | SituationRecto
+    | ReactionRecto
+    | ReactionVerso
+    | EscaladeRecto
+    | EscaladeVerso
+let template color cardType  =
+    let c = 
+        match color with
+        | Blue -> 0
+        | Red -> 1
+        | Yellow -> 2
+        | Purple -> 3
+        | Green -> 4
+    let t = 
+        match cardType with
+        | SituationRecto -> 0
+        | ReactionRecto -> 1
+        | ReactionVerso -> 2
+        | EscaladeRecto -> 3
+        | EscaladeVerso -> 4
+    2 + c * 5 + t
 module Situation =
-    let verso number (builder: PdfDocumentBuilder) =
+
+
+
+    let verso number mundial (builder: PdfDocumentBuilder) =
         let page = copyWithBoxes (cartes.GetPage(1)) builder
-        let ops = page.CurrentStream.Operations |> Seq.map (function
-            | :? ShowText as st when st.Text = "1" ->
-                ShowText(string number) :> IGraphicsStateOperation
-            | op -> op ) |> Seq.toList
+        let ops = page.CurrentStream.Operations |> Seq.toList
+        
+        let newOps =
+            ops
+            |> updateText (function 
+                | ops & InnerText txt when txt = "X" ->
+                        let size =  getTextMatrix ops  |> getSize
+                        let font = page.GetFonts(mundial)
+                        let text = split font [ st Regular, $"%d{number}"] size 1m (decimal page.PageSize.Width)
+
+                        ops
+                        |> changeText page text Center Top Color.black
+                | ops -> ops)
 
         page.CurrentStream.Operations.Clear()
-        page.CurrentStream.Operations.AddRange(ops)
+        page.CurrentStream.Operations.AddRange(newOps)
 
-    let recto num (mundial: AddedFonts) (futura: AddedFonts) text (builder: PdfDocumentBuilder) =
-        let src = cartes.GetPage(2)
+    let recto num color (mundial: AddedFonts) (futura: AddedFonts) text (builder: PdfDocumentBuilder) =
+        let src = cartes.GetPage(template color SituationRecto)
         let page = copyWithBoxes src builder
         let ops = page.CurrentStream.Operations |> Seq.toList
+        let accent = getColor (cartes.GetPage(template color ReactionRecto).Operations |> Seq.toList)
 
         let newops =
             ops
@@ -532,15 +612,15 @@ module Situation =
 
                     ops
                     |> centerPage src 
-                    |> changeText page text Center Top
+                    |> changeText page text Center Top accent
 
 
-                | ops & InnerText(txt) when txt.StartsWith("En") ->
+                | ops & InnerText(txt) when txt.StartsWith("Texte") ->
                     let size = getTextMatrix ops |> getSize 
                     let font = page.GetFonts(futura)
                     let lines = split font text size 1.5m 180m
 
-                    ops |> changeText page lines Left Midle
+                    ops |> changeText page lines Left Midle accent
                 | _ -> []
             )
 
@@ -548,11 +628,13 @@ module Situation =
         page.CurrentStream.Operations.AddRange(newops)
 
 module Reaction =
-    let recto num (mundial: AddedFonts) (futura: AddedFonts) text (builder: PdfDocumentBuilder) =
-        let src = cartes.GetPage(3)
+
+
+    let recto num color (mundial: AddedFonts) (futura: AddedFonts) text (builder: PdfDocumentBuilder) =
+        let src = cartes.GetPage(template color ReactionRecto)
         let page = copyWithBoxes src builder
         let ops = page.CurrentStream.Operations |> Seq.toList
-
+        let accent = getColor (cartes.GetPage(template color ReactionRecto).Operations |> Seq.toList)
         let newops =
             ops
             |> updateText (function 
@@ -563,27 +645,28 @@ module Reaction =
 
                     ops
                     |> centerPage src 
-                    |> changeText page text Center Top
+                    |> changeText page text Center Top accent
 
 
 
-                | ops & InnerText(txt) when txt.StartsWith("Je") ->
+                | ops & InnerText(txt) when txt.StartsWith("Texte") ->
                     let size = getTextMatrix ops |> getSize
                     let font = page.GetFonts(futura)
                     let lines = split font text size 1.5m 180m 
                     ops
                     |> centerPage src
-                    |> changeText page lines Center Midle 
+                    |> changeText page lines Center Midle accent
                 | _ -> []
             )
 
         page.CurrentStream.Operations.Clear()
         page.CurrentStream.Operations.AddRange(newops)
 
-    let verso num (reaction,count) (mundial: AddedFonts) (futura: AddedFonts) text (builder: PdfDocumentBuilder) =
-        let src = cartes.GetPage(4)
+    let verso num color (reaction,count) (mundial: AddedFonts) (futura: AddedFonts) text (builder: PdfDocumentBuilder) =
+        let src = cartes.GetPage(template color ReactionVerso)
         let page = copyWithBoxes src builder
         let ops = page.CurrentStream.Operations |> Seq.toList
+        let accent = getColor (cartes.GetPage(template color ReactionRecto).Operations |> Seq.toList)
 
         let newops =
             ops
@@ -595,11 +678,11 @@ module Reaction =
 
                     ops
                     |> centerPage src 
-                    |> changeText page text Center Top
+                    |> changeText page text Center Top accent
 
 
 
-                | ops & InnerText(txt) when txt.StartsWith("2 à 6") ->
+                | ops & InnerText(txt) when txt.StartsWith("Texte") ->
                     let m = getTextMatrix ops
                     let size =  getSize m
                     let pos = getPos m
@@ -609,20 +692,111 @@ module Reaction =
                     let font = page.GetFonts(futura)
                     let lines = split font text size 1.5m width 
 
-                    ops
+                    (ops
                     |> changeMatrix (translate 0m -15m)
-                    |> changeText page lines Left Midle
+                    |> changeText page lines Left Midle accent)
+                    @ [ setColor accent ]
 
-                | ops & InnerText(txt) when txt = "1" ->
+                | ops & InnerText(txt) when txt = "N" ->
                     let font = page.GetFonts(mundial)
                     let size = getTextMatrix ops |> getSize 
                     let lines = split font [ st Regular, $"%d{reaction}" ] size 1m (decimal page.PageSize.Width)
-                    ops |> changeText page lines Center Top
-                | ops & InnerText(txt) when txt = "5" ->
+                    ops |> changeText page lines Left Top accent
+                        |> changeMatrix (translate 2m 0m)
+                | ops & InnerText(txt) when txt = "X" ->
                     let font = page.GetFonts(mundial)
                     let size = getTextMatrix ops |> getSize 
                     let lines = split font [ st Regular, $"%d{count}" ] size 1m (decimal page.PageSize.Width)
-                    ops |> changeText page lines Left Top
+                    ops |> changeText page lines Left Top accent
+                | ops & InnerText(txt) when txt = "|" ->
+                    ops 
+                | _ -> []
+            )
+
+        page.CurrentStream.Operations.Clear()
+        page.CurrentStream.Operations.AddRange(newops)
+
+module Escalade =
+
+    let recto num color (mundial: AddedFonts) (futura: AddedFonts) text (builder: PdfDocumentBuilder) =
+        let src = cartes.GetPage(template color EscaladeRecto)
+        let page = copyWithBoxes src builder
+        let ops = page.CurrentStream.Operations |> Seq.toList
+        let accent = getColor (cartes.GetPage(template color ReactionRecto).Operations |> Seq.toList)
+
+        let newops =
+            ops
+            |> updateText (function 
+                | ops & InnerText(txt) when txt.StartsWith("ESCALADE") ->
+                    let size =  getTextMatrix ops  |> getSize
+                    let font = page.GetFonts(mundial)
+                    let text = split font [ st Regular, $"ESCALADE %d{num}"] size 1m (decimal page.PageSize.Width)
+
+                    ops
+                    |> centerPage src 
+                    |> changeText page text Center Top accent
+
+
+
+                | ops & InnerText(txt) when txt.StartsWith("Texte") ->
+                    let size = getTextMatrix ops |> getSize
+                    let font = page.GetFonts(futura)
+                    let lines = split font text size 1.5m 180m 
+                    ops
+                    |> centerPage src
+                    |> changeText page lines Center Midle accent
+                | _ -> []
+            )
+
+        page.CurrentStream.Operations.Clear()
+        page.CurrentStream.Operations.AddRange(newops)
+
+    let verso num color (reaction,count) (mundial: AddedFonts) (futura: AddedFonts) text (builder: PdfDocumentBuilder) =
+        let src = cartes.GetPage(template color EscaladeVerso)
+        let page = copyWithBoxes src builder
+        let ops = page.CurrentStream.Operations |> Seq.toList
+        let accent = getColor (cartes.GetPage(template color ReactionRecto).Operations |> Seq.toList)
+
+        let newops =
+            ops
+            |> updateText (function 
+                | ops & InnerText(txt) when txt.StartsWith("ESCALADE") ->
+                    let size =  getTextMatrix ops  |> getSize
+                    let font = page.GetFonts(mundial)
+                    let text = split font [ st Regular, $"ESCALADE %d{num}"] size 1m (decimal page.PageSize.Width)
+
+                    ops
+                    |> centerPage src 
+                    |> changeText page text Center Top accent
+
+
+
+                | ops & InnerText(txt) when txt.StartsWith("Texte") ->
+                    let m = getTextMatrix ops
+                    let size =  getSize m
+                    let pos = getPos m
+                    let trimbox = src.Dictionary.Data[NameToken.TrimBox] |> rect
+
+                    let width = decimal trimbox.Width - (pos.X - decimal trimbox.Left) * 2m + decimal trimbox.Left
+                    let font = page.GetFonts(futura)
+                    let lines = split font text size 1.5m width 
+
+                    (ops
+                    |> changeMatrix (translate 0m -15m)
+                    |> changeText page lines Left Midle accent)
+                    @ [ setColor accent ]
+
+                | ops & InnerText(txt) when txt = "N" ->
+                    let font = page.GetFonts(mundial)
+                    let size = getTextMatrix ops |> getSize 
+                    let lines = split font [ st Regular, $"%d{reaction}" ] size 1m (decimal page.PageSize.Width)
+                    ops |> changeText page lines Left Top accent
+                        |> changeMatrix (translate 2m 0m)
+                | ops & InnerText(txt) when txt = "X" ->
+                    let font = page.GetFonts(mundial)
+                    let size = getTextMatrix ops |> getSize 
+                    let lines = split font [ st Regular, $"%d{count}" ] size 1m (decimal page.PageSize.Width)
+                    ops |> changeText page lines Left Top accent
                 | ops & InnerText(txt) when txt = "|" ->
                     ops 
                 | _ -> []
@@ -635,10 +809,10 @@ module Reaction =
 module Cards =
     type Situation =
         { Id: int 
+          Color: Colors
           Dice: int
           Text: (Style * string) list 
-          Reactions: Reaction list
-          }
+          Reactions: Reaction list }
     and Reaction =
         { Text: (Style * string) list
           Consequences: Consequence list }    
@@ -649,7 +823,7 @@ module Cards =
     and Range = { Min: int; Max: int}
     and Score =
         | Score of int
-        | Escalade of int
+        | Escalade of int * Reaction list
 
 
 let rec toText' style (spans: MarkdownSpans) =
@@ -667,23 +841,61 @@ let rec toText' style (spans: MarkdownSpans) =
         ]
 
 let toText (spans: MarkdownSpans) =
-    toText' { FontStyle = Regular; Color = None } spans
+    toText' { FontStyle = Regular; Color = DefaultColor } spans
     
 
 open Cards
-let md = FSharp.Formatting.Markdown.Markdown.Parse(File.ReadAllText(@"C:\Users\jchassaing\OneDrive\Transmissions\template\situations.md"))
-
-let rangeRx = System.Text.RegularExpressions.Regex(@"^(\d+)(\sà (\d+))?\s*:\s*$")
-let scoreRx = System.Text.RegularExpressions.Regex(@"\(([+\-]?\d)\)")
-let escaladeRx = System.Text.RegularExpressions.Regex(@"\(\s*voir\s+Escalade\s*\)")
+open Microsoft.FSharp.Core.CompilerServices
+open System.Collections
 
 
-let parseConsequence ps =
+let rangeRx = System.Text.RegularExpressions.Regex(@"^\s*(\d+)(\sà (\d+))?\s*:\s*")
+let scoreRx = System.Text.RegularExpressions.Regex(@"\s*\(([+\-]?\d)\)\s*$")
+let escaladeRx = System.Text.RegularExpressions.Regex(@"\(\s*voir\s+Escalade(\s+\$)?\s*\)")
+
+let rec private mapFold' f value items (result: ListCollector<_> byref) =
+    match items with
+    | [] -> result.Close(), value
+    | item :: tail ->
+        let item, v = f value item 
+        result.Add(item)
+        mapFold' f v tail &result
+
+let mapFold f seed items =
+    let mutable result = ListCollector()
+    mapFold' f seed items &result
+
+
+
+let rec parseEscalade idescalade ps : Reaction * int =
     match ps with
-    | Span(description, _) :: _ ->
+    | Span(description,_) :: ListBlock(_,items,_) :: _ ->
+        let conseqs, idescalade =
+            mapFold parseConsequence idescalade items
+        { Text = toText description
+          Consequences = conseqs
+           }, idescalade
+    | Span(description,_) :: _ ->
+        { Text = toText description
+          Consequences = []
+           }, idescalade
+    | _ -> printfn "%A" ps
+           failwith "Nope"
+    
+
+and parseEscalades idescalade ps =
+    match ps with
+    | ListBlock(_, cases,_) :: _ ->
+        let items, id = mapFold parseEscalade idescalade cases
+        items, id + 1
+    | _ -> [], idescalade
+
+and parseConsequence (idescalade: int) ps : Consequence * int =
+    match ps with
+    | Span(description, _) :: tail ->
         let range= 
             description |> List.tryPick ( function
-                | Strong([Literal(txt,_)],_) ->
+                | Literal(txt,_) ->
                     let m = rangeRx.Match(txt)
                     if m.Success then
                         let min = int m.Groups[1].Value
@@ -698,59 +910,143 @@ let parseConsequence ps =
                         None
                 | _ -> None
             )
+        let escalades, idescalade' = parseEscalades idescalade tail 
+        
         let score= 
-            description |> List.tryPick ( function
-                | Strong([Literal(txt,_)],_) ->
-                    let m = scoreRx.Match(txt)
-                    if m.Success then
-                        Some (Score (int m.Groups[1].Value))
-                    else
-                        let m = escaladeRx.Match(txt)
+            match escalades with
+            | [] ->
+                description |> List.tryPick ( function
+                    | Literal(txt,_) ->
+                        let m = scoreRx.Match(txt)
                         if m.Success then
-                            Some (Escalade 0)
+                            Some (Score (int m.Groups[1].Value))
                         else
                             None
-                | _ -> None
-            )
+                    | _ -> None)
+            | _ -> Some (Escalade(idescalade, escalades))
         let text =
             description
-            |> List.filter (function
-                | Strong([Literal(txt,_)],_)  when rangeRx.IsMatch(txt) ||scoreRx.IsMatch(txt) || escaladeRx.IsMatch(txt) -> false
-                | _ -> true
+            |> List.map (function
+                | Literal(txt,r) when rangeRx.IsMatch(txt) ||scoreRx.IsMatch(txt) || escaladeRx.IsMatch(txt) -> 
+                    let txt2 = rangeRx.Replace(txt,"")
+                    let txt3 = scoreRx.Replace(txt2,"")
+                    Literal(escaladeRx.Replace(txt3,""),r)
+                | t -> t
             ) 
 
 
         { Range = range |> Option.defaultValue { Min = 0; Max = 0}
           Text = toText text
-          Score = score |> Option.defaultValue (Score 0) }
+          Score = score |> Option.defaultValue (Score 0) }, idescalade'
 
 
-let parseReaction ps =
+let parseReaction idescalade ps =
     match ps with
     | Span(description,_) :: ListBlock(_,items,_) ::_ ->
+        let conseqs, idescalade = 
+            items
+            |> List.fold (fun (result,id) item -> 
+            let conseq,id = parseConsequence id item
+            (conseq :: result), id
+             ) ([],idescalade)
         { Text = toText description
-          Consequences = items |> List.map parseConsequence
-        }
+          Consequences = List.rev conseqs
+        }, idescalade
     | [ Span(description,_) ] ->
         { Text = toText description
-          Consequences = []}
+          Consequences = []}, idescalade
 
-let parseSituations (md : MarkdownDocument) = 
-    let rec loop id ps result =
+let parseSituations (dice: int seq) (md : MarkdownDocument) = 
+    let rec loop id idescalade (edice: IEnumerator<int>) ps result =
         match ps with
         | Heading(2, _,_) :: Paragraph(txtSituation,_) :: ListBlock(_, items,_) :: tail ->
+            
+            let reactions, idescalade = mapFold parseReaction idescalade items
             let situation =
                 { Id = id
-                  Dice = 0
-                  Text = toText txtSituation
-                  Reactions = items |> List.map parseReaction } 
+                  Color = 
+                    let id = id%25
+                    if id <= 5 then
+                        Blue
+                    elif id <= 10 then
+                        Red
+                    elif id < 15 then
+                        Yellow 
+                    elif id < 20 then
+                        Purple
+                    else
+                        Green
 
-            loop (id+1) tail (situation :: result)
+                  Dice = 
+                    edice.MoveNext() |> ignore
+                    edice.Current
+                  Text = toText txtSituation
+                  Reactions = reactions } 
+
+            loop (id+1) idescalade edice tail (situation :: result)
         | [] -> List.rev result
         | head :: tail ->
-            loop id tail result
+            loop id idescalade edice tail result
 
-    loop 1 md.Paragraphs []
+    use edice = dice.GetEnumerator()
+    loop 1 1 edice md.Paragraphs []
+
+let renderConsequence  (reaction: Reaction) =
+            [ for consequence in reaction.Consequences do
+                if consequence.Range.Min = consequence.Range.Max then
+                    accent Bold, $"%d{consequence.Range.Min} : "
+                else
+                    accent Bold, $"%d{consequence.Range.Min} à {consequence.Range.Max} : "
+                yield! consequence.Text |> List.map (fun (s,t) -> { Color = Color Color.black; FontStyle = match s.FontStyle with Bold -> Regular | x -> x },t)
+                match consequence.Score with
+                | Score score when score > 0 ->
+                    Bold ++ Color.green, $" (+%d{score})\n"
+                | Score score when score < 0 ->
+                    Bold ++ Color.red, $" (-%d{-score})\n"
+                | Score _ ->
+                    Bold ++ Color.yellow, $" (0)\n"
+                | Escalade(n, _) -> accent Bold , $" (voir Escalade %d{n})\n"
+            ]
+let renderSituation situation mundial futura builder =
+    Situation.verso situation.Dice mundial builder
+    Situation.recto situation.Id situation.Color mundial futura situation.Text builder
+    let count = situation.Reactions.Length
+    for i, reaction in situation.Reactions |> List.indexed do
+        let text = reaction.Text |> List.map (fun (s,t) -> {s with FontStyle = match s.FontStyle with Bold -> Regular | x -> x },t)
+        Reaction.recto situation.Id situation.Color mundial futura text builder
+
+        let consequences = renderConsequence reaction
+
+        Reaction.verso situation.Id situation.Color (i+1, count) mundial futura consequences builder
+
+    let escalades = 
+        [ for reaction in situation.Reactions do
+            for conseq in reaction.Consequences do
+                match conseq.Score with
+                | Escalade(n,es) ->
+                    let count = es.Length
+                    for i,e in es |> Seq.indexed do
+                        n,(i+1, count), e
+                | _ -> ()
+        ]
+
+    for num, (i,count), escalade in escalades do
+        let text = escalade.Text |> List.map (fun (s,t) -> {s with FontStyle = match s.FontStyle with Bold -> Regular | x -> x },t)
+        Escalade.recto num situation.Color mundial futura text builder
+
+        let consequences = renderConsequence escalade
+
+        Escalade.verso num situation.Color (i, count) mundial futura consequences builder
+
+let renderSituations situations mundial futura builder=
+    for situation in situations do
+        renderSituation situation mundial futura builder
+
+let cleanMd (md: string) = 
+    md.Replace("**","")
+      .Replace("_","")
+      .Replace("»", "»_")
+      .Replace("«", "_«")
 
 let futuraBytes = File.ReadAllBytes(@"C:\Users\jchassaing\OneDrive\Transmissions\Fonts\Futura PT\FuturaPTBook.ttf")
 let futuraIBytes = File.ReadAllBytes(@"C:\Users\jchassaing\OneDrive\Transmissions\Fonts\Futura PT\FuturaPTBookOblique.ttf")
@@ -769,43 +1065,30 @@ let futura =
       Italic = builder.AddTrueTypeFont(futuraIBytes)
       Bold = builder.AddTrueTypeFont(futuraBBytes) }
 
-// Situation.verso 8 builder
+let mdText = 
+    File.ReadAllText(@"C:\Users\jchassaing\OneDrive\Transmissions\template\situations.md")
+    |> cleanMd
 
+let md = Markdown.Parse(mdText)
+let rand = System.Random(42)
+let dice =
+    seq {
+        while true do
+            yield! List.sortBy (fun _ -> rand.Next()) [1..10]
+    }
 
-let renderSituation situation =
-    Situation.verso situation.Dice builder
-    Situation.recto situation.Id mundial futura situation.Text builder
-    let count = situation.Reactions.Length
-    for i, reaction in situation.Reactions |> List.indexed do
-        let text = reaction.Text |> List.map (fun (s,t) -> {s with FontStyle = match s.FontStyle with Bold -> Regular | x -> x },t)
-        Reaction.recto situation.Id mundial futura text builder
-
-        let consequences =
-            [ for consequence in reaction.Consequences do
-                if consequence.Range.Min = consequence.Range.Max then
-                    Bold ++ Color.blue, $"%d{consequence.Range.Min} :"
-                else
-                    Bold ++ Color.blue, $"%d{consequence.Range.Min} à {consequence.Range.Max} :"
-                yield! consequence.Text |> List.map (fun (s,t) -> { Color = Some Color.black; FontStyle = match s.FontStyle with Bold -> Regular | x -> x },t)
-                match consequence.Score with
-                | Score score when score > 0 ->
-                    Bold ++ Color.green, $"(+%d{score})\n"
-                | Score score when score < 0 ->
-                    Bold ++ Color.red, $"(-%d{-score})\n"
-                | Score _ ->
-                    Bold ++ Color.yellow, $"(0)\n"
-                | Escalade n -> Bold ++ Color.blue , $"(voir Escalade %d{n})\n"
-            ]
-        Reaction.verso situation.Id (i+1, count) mundial futura consequences builder
-
-for situation in (parseSituations md) do
-    renderSituation situation
+let situations = parseSituations dice md
+renderSituations situations mundial futura builder
 
 File.WriteAllBytes(@"C:\Users\jchassaing\OneDrive\Transmissions\template\Result.pdf", builder.Build())
 
 
 // let r = PdfDocument.Open(@"C:\Users\jchassaing\OneDrive\Transmissions\template\Result.pdf")
-// let r = PdfDocument.Open(@"C:\Users\jchassaing\OneDrive\Transmissions\template\Transmission(s)_Cartes Situation (Impressions).pdf")
-// r.GetPage(10).Operations |> printOps
-// (snd (r.GetPage(2).Dictionary.TryGet<DictionaryToken>(NameToken.Resources))).TryGet<DictionaryToken>(NameToken.Font)
-// r.GetPage(2).Operations |> printOps
+
+// r.GetPage(template Red EscaladeRecto).Operations |> Seq.toList  |> printOps
+// |> Seq.filter (function 
+//     | :? SetNonStrokeColorDeviceRgb -> true
+//     | _ -> false)
+//  |> printOps
+
+// cartes.GetPage(1).Operations |> Seq.toList |> printOps
