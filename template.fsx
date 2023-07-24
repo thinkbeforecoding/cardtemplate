@@ -1070,35 +1070,38 @@ let futuraIBytes = File.ReadAllBytes(@"C:\Users\jchassaing\OneDrive\Transmission
 let futuraBBytes = File.ReadAllBytes(@"C:\Users\jchassaing\OneDrive\Transmissions\Fonts\Futura PT\FuturaPTMedium.ttf")
 let mundialBytes = File.ReadAllBytes(@"C:\Users\jchassaing\OneDrive\Transmissions\Fonts\Mundial\MundialBold.ttf")
 
-let builder = new PdfDocumentBuilder()
-let mundial = 
-    let font = builder.AddTrueTypeFont(mundialBytes)
-    { AddedFonts.Regular = font
-      Italic = font
-      Bold = font }
+let parse path =
+    let mdText = 
+        File.ReadAllText(path)
+        |> cleanMd
 
-let futura =
-    { AddedFonts.Regular = builder.AddTrueTypeFont(futuraBytes)
-      Italic = builder.AddTrueTypeFont(futuraIBytes)
-      Bold = builder.AddTrueTypeFont(futuraBBytes) }
+    let md = Markdown.Parse(mdText)
+    let rand = System.Random(42)
+    let dice =
+        seq {
+            while true do
+                yield! List.sortBy (fun _ -> rand.Next()) [1..10]
+        }
 
-let mdText = 
-    File.ReadAllText(@"C:\Users\jchassaing\OneDrive\Transmissions\template\situations.md")
-    |> cleanMd
+    let situations = parseSituations dice md
+    situations
 
-let md = Markdown.Parse(mdText)
-let rand = System.Random(42)
-let dice =
-    seq {
-        while true do
-            yield! List.sortBy (fun _ -> rand.Next()) [1..10]
-    }
+let render situations =
+    let builder = new PdfDocumentBuilder()
+    let mundial = 
+        let font = builder.AddTrueTypeFont(mundialBytes)
+        { AddedFonts.Regular = font
+          Italic = font
+          Bold = font }
 
-let situations = parseSituations dice md
+    let futura =
+        { AddedFonts.Regular = builder.AddTrueTypeFont(futuraBytes)
+          Italic = builder.AddTrueTypeFont(futuraIBytes)
+          Bold = builder.AddTrueTypeFont(futuraBBytes) }
 
-renderSituations situations mundial futura builder
+    renderSituations situations mundial futura builder
 
-File.WriteAllBytes(@"C:\Users\jchassaing\OneDrive\Transmissions\template\Result.pdf", builder.Build())
+    File.WriteAllBytes(@"C:\Users\jchassaing\OneDrive\Transmissions\template\Result.pdf", builder.Build())
 
 
 // let r = PdfDocument.Open(@"C:\Users\jchassaing\OneDrive\Transmissions\template\Result.pdf")
@@ -1111,67 +1114,72 @@ File.WriteAllBytes(@"C:\Users\jchassaing\OneDrive\Transmissions\template\Result.
 
 // cartes.GetPage(1).Operations |> Seq.toList |> printOps
 
+let check (situations: Situation list) =
+    for situation in situations do
+        let errors = ResizeArray()
 
-for situation in situations do
-    let errors = ResizeArray()
+        let checkRanges name reaction =
+            if reaction.Consequences = [] then
+                errors.Add $"  [{name}] consequences manquantes"
+            let ranges =
+                [ for cons in reaction.Consequences do
+                    yield! [cons.Range.Min .. cons.Range.Max] ]
+            if List.contains 0 ranges then
+                errors.Add $"  [{name}] pourcentage non spécifée"
 
-    let checkRanges name reaction =
-        if reaction.Consequences = [] then
-            errors.Add $"  [{name}] consequences manquantes"
-        let ranges =
-            [ for cons in reaction.Consequences do
-                yield! [cons.Range.Min .. cons.Range.Max] ]
-        if List.contains 0 ranges then
-            errors.Add $"  [{name}] pourcentage non spécifée"
+            let missing = (set ranges  - set [1..10]) |> Set.remove 0
+            if not missing.IsEmpty then
+                for n in missing do
+                    errors.Add $"  [{name}] pourcentage {n} manquant"
+            let multi = ranges |> List.countBy id |> List.filter (fun (c,_) -> c > 1) |> List.map snd
+            if not multi.IsEmpty then
+                for n in missing do
+                    errors.Add $"  [{name}] valeur {n} multiple"
 
-        let missing = (set ranges  - set [1..10]) |> Set.remove 0
-        if not missing.IsEmpty then
-            for n in missing do
-                errors.Add $"  [{name}] pourcentage {n} manquant"
-        let multi = ranges |> List.countBy id |> List.filter (fun (c,_) -> c > 1) |> List.map snd
-        if not multi.IsEmpty then
-            for n in missing do
-                errors.Add $"  [{name}] valeur {n} multiple"
+        if situation.Text = [] then 
+            errors.Add "  texte situation manquant"
+        if situation.Reactions = [] then
+            errors.Add "  reactions manquantes"
+        else
+            for i,reaction in situation.Reactions |> Seq.indexed do
+                if reaction.Text = [] then
+                    errors.Add $"  [reaction {i+1}] texte manquant"
+                checkRanges $"reaction {i+1}" reaction
 
-    if situation.Text = [] then 
-        errors.Add "  texte situation manquant"
-    if situation.Reactions = [] then
-        errors.Add "  reactions manquantes"
-    else
-        for i,reaction in situation.Reactions |> Seq.indexed do
-            if reaction.Text = [] then
-                errors.Add $"  [reaction {i+1}] texte manquant"
-            checkRanges $"reaction {i+1}" reaction
-
-            for cons in reaction.Consequences do
-                match cons.Score with
-                | Escalade(n, es) ->
-                    for escalade in es do
-                        if escalade.Text = [] then
-                            errors.Add $"  [escalade {n}] texte manquant"
-                        checkRanges $"escalade {n}" escalade
-
-                | _ -> ()
-
-    if errors.Count = 0 then
-        let scores =
-            [ for reaction in situation.Reactions do
                 for cons in reaction.Consequences do
-                    for i in cons.Range.Min .. cons.Range.Max do
-                        match cons.Score with
-                        | Score n -> decimal n
-                        | Escalade(_,es) ->
-                            for reac in es do
-                                for c in reac.Consequences do
-                                    for j in c.Range.Min .. c.Range.Max do
-                                        match c.Score with
-                                        | Score n -> decimal n
-                                        | _ -> failwith "Les doubles escalades ne sont pas gérées"
-             ]
-        let score = scores |> List.average
+                    match cons.Score with
+                    | Escalade(n, es) ->
+                        for escalade in es do
+                            if escalade.Text = [] then
+                                errors.Add $"  [escalade {n}] texte manquant"
+                            checkRanges $"escalade {n}" escalade
 
-        printfn "✅ %s (%d réactions) (score %.2f)" situation.Title situation.Reactions.Length score
-    else
-        printfn "❌ %s (%d réactions)" situation.Title situation.Reactions.Length
-        for error in errors do
-            printfn "%s" error
+                    | _ -> ()
+
+        if errors.Count = 0 then
+            let scores =
+                [ for reaction in situation.Reactions do
+                    for cons in reaction.Consequences do
+                        for i in cons.Range.Min .. cons.Range.Max do
+                            match cons.Score with
+                            | Score n -> decimal n
+                            | Escalade(_,es) ->
+                                for reac in es do
+                                    for c in reac.Consequences do
+                                        for j in c.Range.Min .. c.Range.Max do
+                                            match c.Score with
+                                            | Score n -> decimal n
+                                            | _ -> failwith "Les doubles escalades ne sont pas gérées"
+                ]
+            let score = scores |> List.average
+
+            printfn "✅ %s (%d réactions) (score %.2f)" situation.Title situation.Reactions.Length score
+        else
+            printfn "❌ %s (%d réactions)" situation.Title situation.Reactions.Length
+            for error in errors do
+                printfn "%s" error
+
+
+let situations = parse @"C:\Users\jchassaing\OneDrive\Transmissions\template\situations.md"
+render situations
+check situations
