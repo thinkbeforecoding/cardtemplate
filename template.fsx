@@ -871,8 +871,8 @@ open Microsoft.FSharp.Core.CompilerServices
 open System.Collections
 
 
-let rangeRx = System.Text.RegularExpressions.Regex(@"^\s*(\d+)(\sà (\d+))?\s*:\s*")
-let scoreRx = System.Text.RegularExpressions.Regex(@"\s*\(([+\-]?\d)\)\s*$")
+let rangeRx = System.Text.RegularExpressions.Regex(@"^\s*(\d+)(\s+à\s+(\d+))?\s*:\s*")
+let scoreRx = System.Text.RegularExpressions.Regex(@"\s*\(([+\-]?\d)\)\s*")
 let escaladeRx = System.Text.RegularExpressions.Regex(@"\(\s*voir\s+Escalade(\s+\$)?\s*\)")
 
 let rec private mapFold' f value items (result: ListCollector<_> byref) =
@@ -918,7 +918,8 @@ and parseEscalades idescalade ps =
 
 and parseConsequence (idescalade: int) ps : Consequence * int =
     match ps with
-    | Span(description, _) :: tail ->
+    | Span(description, _) :: tail 
+    | Paragraph( description , _) :: tail ->
         let range= 
             description |> List.tryPick ( function
                 | Literal(txt,_) ->
@@ -964,6 +965,8 @@ and parseConsequence (idescalade: int) ps : Consequence * int =
         { Range = range |> Option.defaultValue { Min = 0; Max = 0}
           Text = toText text
           Score = score |> Option.defaultValue (Score -9) }, idescalade'
+    | s :: tail -> failwith $"{ s.GetType().Name }" 
+    | [] -> failwith "Empty consequence"
 
 
 let parseReaction idescalade ps =
@@ -1243,11 +1246,11 @@ let check (situations: Situation list) =
                                         match c.Score with
                                         | Score n ->
                                             if n = -9 then
-                                                warn $"  [reaction {i+1}] score manquant \x1b[38;2;128;128;128m/ {textToString  cons.Text |> cut 40 }"
+                                                warn $"  [reaction {i+1}] score manquant \x1b[38;2;128;128;128m/ {textToString  c.Text |> cut 40 }"
                                             elif n > 3 then
-                                                warn $"  [reaction {i+1}] score trop grand ({n}) \x1b[38;2;128;128;128m/ {textToString  cons.Text |> cut 40 }"
+                                                warn $"  [reaction {i+1}] score trop grand ({n}) \x1b[38;2;128;128;128m/ {textToString  c.Text |> cut 40 }"
                                             elif n < -3 then
-                                                warn $"  [reaction {i+1}] score trop petit ({n}) \x1b[38;2;128;128;128m/ {textToString  cons.Text |> cut 40 }"
+                                                warn $"  [reaction {i+1}] score trop petit ({n}) \x1b[38;2;128;128;128m/ {textToString  c.Text |> cut 40 }"
                                         | _ -> failwith "Escalade niveau 2"
                             | Score n -> 
                                 if n = -9 then
@@ -1266,18 +1269,18 @@ let check (situations: Situation list) =
                         
                     else
                         Error errors
-                (cut 40 situation.Title), situation.Reactions.Length , result
+                situation.Id, (cut 40 situation.Title), situation.Reactions.Length , result
         ]
         |> List.sortBy(function
-            | _,_,Ok _ -> 1
+            | _,_,_,Ok _ -> 1
             | _ -> 0)
 
-    for title, reactions, result in checks do
+    for n,title, reactions, result in checks do
         match result with
         | Ok score ->
-            printfn "✅ %s \x1b[38;2;128;128;128m(%d réactions) \x1b[32m(score %.2f)\x1b[0m" title reactions score
+            printfn "✅ S%d %s \x1b[38;2;128;128;128m(%d réactions) \x1b[32m(score %.2f)\x1b[0m" n title reactions score
         | Error errors ->
-            printfn "❌ %s \x1b[38;2;128;128;128m(%d réactions)\x1b[0m" title reactions
+            printfn "❌ S%d %s \x1b[38;2;128;128;128m(%d réactions)\x1b[0m" n title reactions
             for error in errors do
                 printfn "%s" error
 
