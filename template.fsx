@@ -1110,11 +1110,11 @@ let cleanMd (md: string) =
             | ":" -> " : "
             | "'" -> "’"
             | "..." -> "… "
-            | s when s.StartsWith("?") || s.StartsWith("!") -> $" {s} "
+            | s when s.StartsWith("?") || s.StartsWith("!") -> $"\xA0{s} "
             | _ -> m.Value )
         )
     let md4 =
-       quoteRx.Replace(md3, (fun m -> "_« " + m.Groups[1].Value + " »_ "))
+       quoteRx.Replace(md3, (fun m -> "_«\xA0" + m.Groups[1].Value + "\xA0»_"))
     let md5 =
         normSpaceRx.Replace(md4, (fun m -> m.Groups[1].Value + " "))
     md5
@@ -1219,11 +1219,11 @@ let check (situations: Situation list) =
                     let missing = (set ranges  - set [1..10]) |> Set.remove 0
                     if not missing.IsEmpty then
                         for n in missing do
-                            warn $"  [{name}] pourcentage {n} manquant"
-                    let multi = ranges |> List.countBy id |> List.filter (fun (c,_) -> c > 1) |> List.map snd
+                            warn $"  [{name}] pourcentage {n} manquant \x1b[38;2;128;128;128m/ { textToString reaction.Text |> cut 40}"
+                    let multi = ranges |> List.countBy id |> List.filter (fun (_,c) -> c > 1) |> List.map fst
                     if not multi.IsEmpty then
-                        for n in missing do
-                            warn $"  [{name}] valeur {n} multiple"
+                        for n in multi do
+                            warn $"  [{name}] valeur {n} multiple \x1b[38;2;128;128;128m/ { textToString reaction.Text |> cut 40}"
 
                 if situation.Text = [] then 
                     warn "  texte situation manquant"
