@@ -822,9 +822,13 @@ module Cards =
           Text: (Style * string) list
           Score: Score }
     and Range = { Min: int; Max: int}
+        with
+            member this.Percents = (this.Max + 1 - this.Min) * 10
+            member this.Probability = decimal this.Percents / 100m
     and Score =
         | Score of int
         | Escalade of int * Reaction list
+
 
 
 let rec toText' style (spans: MarkdownSpans) =
@@ -938,7 +942,7 @@ and parseConsequence (idescalade: int) ps : Consequence * int =
 
         { Range = range |> Option.defaultValue { Min = 0; Max = 0}
           Text = toText text
-          Score = score |> Option.defaultValue (Score 0) }, idescalade'
+          Score = score |> Option.defaultValue (Score -9) }, idescalade'
 
 
 let parseReaction idescalade ps =
@@ -1065,10 +1069,10 @@ let cleanMd (md: string) =
       .Replace("»", "»_")
       .Replace("«", "_«")
 
-let futuraBytes = File.ReadAllBytes(@"C:\Users\jchassaing\OneDrive\Transmissions\Fonts\Futura PT\FuturaPTBook.ttf")
-let futuraIBytes = File.ReadAllBytes(@"C:\Users\jchassaing\OneDrive\Transmissions\Fonts\Futura PT\FuturaPTBookOblique.ttf")
-let futuraBBytes = File.ReadAllBytes(@"C:\Users\jchassaing\OneDrive\Transmissions\Fonts\Futura PT\FuturaPTMedium.ttf")
-let mundialBytes = File.ReadAllBytes(@"C:\Users\jchassaing\OneDrive\Transmissions\Fonts\Mundial\MundialBold.ttf")
+let futuraBytes = File.ReadAllBytes(@"..\Fonts\Futura PT\FuturaPTBook.ttf")
+let futuraIBytes = File.ReadAllBytes(@"..\Fonts\Futura PT\FuturaPTBookOblique.ttf")
+let futuraBBytes = File.ReadAllBytes(@"..\Fonts\Futura PT\FuturaPTMedium.ttf")
+let mundialBytes = File.ReadAllBytes(@"..\Fonts\Mundial\MundialBold.ttf")
 
 let parse path =
     let mdText = 
@@ -1101,7 +1105,7 @@ let render situations =
 
     renderSituations situations mundial futura builder
 
-    File.WriteAllBytes(@"C:\Users\jchassaing\OneDrive\Transmissions\template\Result.pdf", builder.Build())
+    File.WriteAllBytes(@"Result.pdf", builder.Build())
 
 
 // let r = PdfDocument.Open(@"C:\Users\jchassaing\OneDrive\Transmissions\template\Result.pdf")
@@ -1113,73 +1117,126 @@ let render situations =
 //  |> printOps
 
 // cartes.GetPage(1).Operations |> Seq.toList |> printOps
+let situationScore situation =
+    let scores =
+        [ let reactionProba = 1m / decimal situation.Reactions.Length
+          for reaction in situation.Reactions do
+            for cons in reaction.Consequences do
+                    match cons.Score with
+                    | Score n -> 
+                        reactionProba * cons.Range.Probability * decimal n
+                    | Escalade(_,es) ->
+                        let escaladeReactionProba = 1m / decimal es.Length
+                        for reac in es do
+                            for c in reac.Consequences do
+                                for j in c.Range.Min .. c.Range.Max do
+                                    match c.Score with
+                                    | Score n ->
+                                       reactionProba * cons.Range.Probability *
+                                        escaladeReactionProba * c.Range.Probability * decimal n
+                                    | _ -> failwith "Les doubles escalades ne sont pas gérées"
+        ]
+    scores |> List.sum
+
+let cut len (s: string) =
+    if s.Length >= len-1 then
+        s.Substring(0,len-1) + "…"
+    else
+        s 
+
+let textToString (text: (Style* string) list) =
+    let builder = System.Text.StringBuilder()
+    for _,s in text do
+        builder.Append(s) |> ignore
+    string builder
 
 let check (situations: Situation list) =
-    for situation in situations do
-        let errors = ResizeArray()
+    let checks =
+        [
+            for situation in situations do
+                let errors = ResizeArray()
+                let warn (s:string) =
+                    errors.Add("\x1b[33m" + s + "\x1b[0m")
 
-        let checkRanges name reaction =
-            if reaction.Consequences = [] then
-                errors.Add $"  [{name}] consequences manquantes"
-            let ranges =
-                [ for cons in reaction.Consequences do
-                    yield! [cons.Range.Min .. cons.Range.Max] ]
-            if List.contains 0 ranges then
-                errors.Add $"  [{name}] pourcentage non spécifée"
+                let checkRanges name reaction =
+                    if reaction.Consequences = [] then
+                        warn $"  [{name}] consequences manquantes \x1b[38;2;128;128;128m/ { textToString reaction.Text |> cut 40}"
+                    let ranges =
+                        [ for cons in reaction.Consequences do
+                            yield! [cons.Range.Min .. cons.Range.Max] ]
+                    if List.contains 0 ranges then
+                        warn $"  [{name}] pourcentage non spécifée \x1b[38;2;128;128;128m/ { textToString reaction.Text |> cut 40}"
 
-            let missing = (set ranges  - set [1..10]) |> Set.remove 0
-            if not missing.IsEmpty then
-                for n in missing do
-                    errors.Add $"  [{name}] pourcentage {n} manquant"
-            let multi = ranges |> List.countBy id |> List.filter (fun (c,_) -> c > 1) |> List.map snd
-            if not multi.IsEmpty then
-                for n in missing do
-                    errors.Add $"  [{name}] valeur {n} multiple"
+                    let missing = (set ranges  - set [1..10]) |> Set.remove 0
+                    if not missing.IsEmpty then
+                        for n in missing do
+                            warn $"  [{name}] pourcentage {n} manquant"
+                    let multi = ranges |> List.countBy id |> List.filter (fun (c,_) -> c > 1) |> List.map snd
+                    if not multi.IsEmpty then
+                        for n in missing do
+                            warn $"  [{name}] valeur {n} multiple"
 
-        if situation.Text = [] then 
-            errors.Add "  texte situation manquant"
-        if situation.Reactions = [] then
-            errors.Add "  reactions manquantes"
-        else
-            for i,reaction in situation.Reactions |> Seq.indexed do
-                if reaction.Text = [] then
-                    errors.Add $"  [reaction {i+1}] texte manquant"
-                checkRanges $"reaction {i+1}" reaction
+                if situation.Text = [] then 
+                    warn "  texte situation manquant"
+                if situation.Reactions = [] then
+                    warn "  reactions manquantes"
+                else
+                    for i,reaction in situation.Reactions |> Seq.indexed do
+                        if reaction.Text = [] then
+                            warn $"  [reaction {i+1}] texte manquant"
+                        checkRanges $"reaction {i+1}" reaction
 
-                for cons in reaction.Consequences do
-                    match cons.Score with
-                    | Escalade(n, es) ->
-                        for escalade in es do
-                            if escalade.Text = [] then
-                                errors.Add $"  [escalade {n}] texte manquant"
-                            checkRanges $"escalade {n}" escalade
-
-                    | _ -> ()
-
-        if errors.Count = 0 then
-            let scores =
-                [ for reaction in situation.Reactions do
-                    for cons in reaction.Consequences do
-                        for i in cons.Range.Min .. cons.Range.Max do
+                        for cons in reaction.Consequences do
                             match cons.Score with
-                            | Score n -> decimal n
-                            | Escalade(_,es) ->
-                                for reac in es do
-                                    for c in reac.Consequences do
-                                        for j in c.Range.Min .. c.Range.Max do
-                                            match c.Score with
-                                            | Score n -> decimal n
-                                            | _ -> failwith "Les doubles escalades ne sont pas gérées"
-                ]
-            let score = scores |> List.average
+                            | Escalade(n, es) ->
+                                for escalade in es do
+                                    if escalade.Text = [] then
+                                        warn $"  [escalade {n}] texte manquant"
+                                    checkRanges $"escalade {n}" escalade
+                                    for c in escalade.Consequences do
+                                        match c.Score with
+                                        | Score n ->
+                                            if n = -9 then
+                                                warn $"  [reaction {i+1}] score manquant \x1b[38;2;128;128;128m/ {textToString  cons.Text |> cut 40 }"
+                                            elif n > 3 then
+                                                warn $"  [reaction {i+1}] score trop grand ({n}) \x1b[38;2;128;128;128m/ {textToString  cons.Text |> cut 40 }"
+                                            elif n < -3 then
+                                                warn $"  [reaction {i+1}] score trop petit ({n}) \x1b[38;2;128;128;128m/ {textToString  cons.Text |> cut 40 }"
+                                        | _ -> failwith "Escalade niveau 2"
+                            | Score n -> 
+                                if n = -9 then
+                                    warn $"  [reaction {i+1}] score manquant \x1b[38;2;128;128;128m/ {textToString  cons.Text |> cut 40 }"
+                                elif n > 3 then
+                                    warn $"  [reaction {i+1}] score trop grand ({n}) \x1b[38;2;128;128;128m/ {textToString  cons.Text |> cut 40 }"
+                                elif n < -3 then
+                                    warn $"  [reaction {i+1}] score trop petit ({n}) \x1b[38;2;128;128;128m/ {textToString  cons.Text |> cut 40 }"
+                                
 
-            printfn "✅ %s (%d réactions) (score %.2f)" situation.Title situation.Reactions.Length score
-        else
-            printfn "❌ %s (%d réactions)" situation.Title situation.Reactions.Length
+                let result = 
+                    if errors.Count = 0 then
+                        let score = situationScore situation
+
+                        Ok score
+                        
+                    else
+                        Error errors
+                (cut 40 situation.Title), situation.Reactions.Length , result
+        ]
+        |> List.sortBy(function
+            | _,_,Ok _ -> 1
+            | _ -> 0)
+
+    for title, reactions, result in checks do
+        match result with
+        | Ok score ->
+            printfn "✅ %s \x1b[38;2;128;128;128m(%d réactions) \x1b[32m(score %.2f)\x1b[0m" title reactions score
+        | Error errors ->
+            printfn "❌ %s \x1b[38;2;128;128;128m(%d réactions)\x1b[0m" title reactions
             for error in errors do
                 printfn "%s" error
 
+            
 
-let situations = parse @"C:\Users\jchassaing\OneDrive\Transmissions\template\situations.md"
-render situations
+let situations = parse @"situations.md"
 check situations
+render situations
