@@ -573,28 +573,45 @@ let template color cardType  =
         | EscaladeRecto -> 3
         | EscaladeVerso -> 4
     2 + c * 5 + t
+
 module Situation =
-
-
-
     let verso number mundial (builder: PdfDocumentBuilder) =
-        let page = copyWithBoxes (cartes.GetPage(1)) builder
+        let src = cartes.GetPage(1)
+        let page = copyWithBoxes src builder
         let ops = page.CurrentStream.Operations |> Seq.toList
-        
+        let rects = ResizeArray()
+
         let newOps =
             ops
             |> updateText (function 
                 | ops & InnerText txt when txt = "X" ->
-                        let size =  getTextMatrix ops  |> getSize
+                        let m = getTextMatrix ops
+                        let size = getSize m
+                        let pos = getPos m
                         let font = page.GetFonts(mundial)
                         let text = split font [ st Regular, $"%d{number}"] size 1m (decimal page.PageSize.Width)
 
-                        ops
-                        |> changeText page text Center Top Color.black
+                        rects.Add(pos, size)
+
+                        (ops
+                        |> changeText page text Center Top Color.black)
                 | ops -> ops)
 
         page.CurrentStream.Operations.Clear()
         page.CurrentStream.Operations.AddRange(newOps)
+
+        if number = 6 ||number = 9 then
+            for pos, size in rects do
+                let dx,dy =
+                    if pos.X < 180m then
+                        -9.5m, -7m
+                    else
+                        8.5m, 3m
+
+                page.SetTextAndFillColor(255uy,255uy,255uy)
+                    .SetStrokeColor(255uy,255uy,255uy)
+                    .DrawRectangle(PdfPoint(pos.X + dx, pos.Y + dy), size.Width * 0.6m, 3m, fill = true)
+                |> ignore
 
     let recto num color (mundial: AddedFonts) (futura: AddedFonts) text (builder: PdfDocumentBuilder) =
         let src = cartes.GetPage(template color SituationRecto)
@@ -893,7 +910,11 @@ and parseEscalades idescalade ps =
     | ListBlock(_, cases,_) :: _ ->
         let items, id = mapFold parseEscalade idescalade cases
         items, id + 1
-    | _ -> [], idescalade
+    | h :: _ ->
+        printfn "%A" h
+        [], idescalade
+    | [] ->
+        [], idescalade
 
 and parseConsequence (idescalade: int) ps : Consequence * int =
     match ps with
@@ -1062,12 +1083,38 @@ let renderSituation situation mundial futura builder =
 let renderSituations situations mundial futura builder=
     for situation in situations do
         renderSituation situation mundial futura builder
+let rmdRx = System.Text.RegularExpressions.Regex(@"(\s*)(\*\*|_)( *)")
+let punctRx = System.Text.RegularExpressions.Regex(@"(\s*)(\.\.\.|\.|,|\?[!?]?|\![!?]?|;|:|')( *)")
+let quoteRx = System.Text.RegularExpressions.Regex(@"[""“”«]\s*([^""“”»]*?)\s*[""“”»] *")
+let normSpaceRx = System.Text.RegularExpressions.Regex(@"(\*|_) +")
+
+
 
 let cleanMd (md: string) = 
-    md.Replace("**","")
-      .Replace("_","")
-      .Replace("»", "»_")
-      .Replace("«", "_«")
+    let md2 =
+        rmdRx.Replace(md, (fun m ->
+            match m.Groups[2].Value with
+            | "**" -> m.Groups[1].Value + m.Groups[3].Value
+            | "_" -> m.Groups[1].Value + m.Groups[3].Value
+            | _ -> m.Value )
+        )
+    let md3 =
+        punctRx.Replace(md2, (fun m ->
+            match m.Groups[2].Value with
+            | "." -> ". "
+            | "," -> ", "
+            | ";" -> "; "
+            | ":" -> " : "
+            | "'" -> "’"
+            | "..." -> "… "
+            | s when s.StartsWith("?") || s.StartsWith("!") -> $" {s} "
+            | _ -> m.Value )
+        )
+    let md4 =
+       quoteRx.Replace(md3, (fun m -> "_« " + m.Groups[1].Value + " »_ "))
+    let md5 =
+        normSpaceRx.Replace(md4, (fun m -> m.Groups[1].Value + " "))
+    md5
 
 let futuraBytes = File.ReadAllBytes(@"..\Fonts\Futura PT\FuturaPTBook.ttf")
 let futuraIBytes = File.ReadAllBytes(@"..\Fonts\Futura PT\FuturaPTBookOblique.ttf")
@@ -1108,7 +1155,6 @@ let render situations =
     File.WriteAllBytes(@"Result.pdf", builder.Build())
 
 
-// let r = PdfDocument.Open(@"C:\Users\jchassaing\OneDrive\Transmissions\template\Result.pdf")
 
 // r.GetPage(template Red EscaladeRecto).Operations |> Seq.toList  |> printOps
 // |> Seq.filter (function 
@@ -1235,8 +1281,18 @@ let check (situations: Situation list) =
             for error in errors do
                 printfn "%s" error
 
-            
 
+
+fsi.ShowDeclarationValues <- false
 let situations = parse @"situations.md"
 check situations
 render situations
+
+// situations[5].Reactions[0].Consequences[0].Score
+// File.ReadAllText("Situations.md") |> cleanMd
+// |> fun t -> File.WriteAllText("Sit.txt", t)
+
+let r = PdfDocument.Open(@"C:\Users\jchassaing\OneDrive\Transmissions\template\Test.pdf")
+r.GetPage(1).Operations |> printOps
+
+
