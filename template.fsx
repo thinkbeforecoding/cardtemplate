@@ -1187,6 +1187,27 @@ let situationScore situation =
         ]
     scores |> List.sum
 
+let situationCards situation =
+    [   1
+        for reaction in situation.Reactions do
+            1
+            for cons in reaction.Consequences do
+                    match cons.Score with
+                    | Score n -> ()
+                    | Escalade(_,es) ->
+                        es.Length
+    ]
+    |> List.sum
+let situationEscalades situation =
+    seq {
+        for reaction in situation.Reactions do
+            for cons in reaction.Consequences do
+                    match cons.Score with
+                    | Score n -> ()
+                    | Escalade(_,_) ->
+                        1
+    } |> Seq.sum
+
 let cut len (s: string) =
     if s.Length >= len-1 then
         s.Substring(0,len-1) + "…"
@@ -1264,8 +1285,10 @@ let check (situations: Situation list) =
                 let result = 
                     if errors.Count = 0 then
                         let score = situationScore situation
+                        let escalades = situationEscalades situation
+                        let cards = situationCards situation
 
-                        Ok score
+                        Ok (score, escalades, cards)
                         
                     else
                         Error errors
@@ -1277,8 +1300,8 @@ let check (situations: Situation list) =
 
     for n,title, reactions, result in checks do
         match result with
-        | Ok score ->
-            printfn "✅ S%d %s \x1b[38;2;128;128;128m(%d réactions) \x1b[32m(score %.2f)\x1b[0m" n title reactions score
+        | Ok (score, escalades, cards) ->
+            printfn "✅ S%d %s \x1b[38;2;128;128;128m(%d réactions / %d escalades / %d cards) \x1b[32m(score %.2f)\x1b[0m" n title reactions escalades cards score
         | Error errors ->
             printfn "❌ S%d %s \x1b[38;2;128;128;128m(%d réactions)\x1b[0m" n title reactions
             for error in errors do
