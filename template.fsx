@@ -735,7 +735,7 @@ module Reaction =
 
 module Escalade =
 
-    let recto num color (mundial: AddedFonts) (futura: AddedFonts) text (builder: PdfDocumentBuilder) =
+    let recto num k color (mundial: AddedFonts) (futura: AddedFonts) text (builder: PdfDocumentBuilder) =
         let src = cartes.GetPage(template color EscaladeRecto)
         let page = copyWithBoxes src builder
         let ops = page.CurrentStream.Operations |> Seq.toList
@@ -747,7 +747,7 @@ module Escalade =
                 | ops & InnerText(txt) when txt.StartsWith("ESCALADE") ->
                     let size =  getTextMatrix ops  |> getSize
                     let font = page.GetFonts(mundial)
-                    let text = split font [ st Regular, $"ESCALADE %d{num}"] size 1m (decimal page.PageSize.Width)
+                    let text = split font [ st Regular, $"ESCALADE %d{num} %c{k}"] size 1m (decimal page.PageSize.Width)
 
                     ops
                     |> centerPage src 
@@ -768,7 +768,7 @@ module Escalade =
         page.CurrentStream.Operations.Clear()
         page.CurrentStream.Operations.AddRange(newops)
 
-    let verso num color (reaction,count) (mundial: AddedFonts) (futura: AddedFonts) text (builder: PdfDocumentBuilder) =
+    let verso num k color (reaction,count) (mundial: AddedFonts) (futura: AddedFonts) text (builder: PdfDocumentBuilder) =
         let src = cartes.GetPage(template color EscaladeVerso)
         let page = copyWithBoxes src builder
         let ops = page.CurrentStream.Operations |> Seq.toList
@@ -780,7 +780,7 @@ module Escalade =
                 | ops & InnerText(txt) when txt.StartsWith("ESCALADE") ->
                     let size =  getTextMatrix ops  |> getSize
                     let font = page.GetFonts(mundial)
-                    let text = split font [ st Regular, $"ESCALADE %d{num}"] size 1m (decimal page.PageSize.Width)
+                    let text = split font [ st Regular, $"ESCALADE %d{num} %c{k}"] size 1m (decimal page.PageSize.Width)
 
                     ops
                     |> centerPage src 
@@ -830,9 +830,11 @@ module Cards =
           Color: Colors
           Dice: int
           Text: (Style * string) list 
-          Reactions: Reaction list }
+          Reactions: Reaction list 
+          Escalades: Map<char, Reaction> }
     and Reaction =
-        { Text: (Style * string) list
+        { Title: string
+          Text: (Style * string) list
           Consequences: Consequence list }    
     and Consequence =
         { Range: Range
@@ -844,7 +846,7 @@ module Cards =
             member this.Probability = decimal this.Percents / 100m
     and Score =
         | Score of int
-        | Escalade of int * Reaction list
+        | Escalade of char list
 
 
 
@@ -874,116 +876,7 @@ open System.Collections
 let rangeRx = System.Text.RegularExpressions.Regex(@"^\s*(\d+)(\s+à\s+(\d+))?\s*:\s*")
 let scoreRx = System.Text.RegularExpressions.Regex(@"\s*\(([+\-]?\d)\)\s*")
 let escaladeRx = System.Text.RegularExpressions.Regex(@"\(\s*voir\s+Escalade(\s+\$)?\s*\)")
-
-let rec private mapFold' f value items (result: ListCollector<_> byref) =
-    match items with
-    | [] -> result.Close(), value
-    | item :: tail ->
-        let item, v = f value item 
-        result.Add(item)
-        mapFold' f v tail &result
-
-let mapFold f seed items =
-    let mutable result = ListCollector()
-    mapFold' f seed items &result
-
-
-
-let rec parseEscalade idescalade ps : Reaction * int =
-    match ps with
-    | Span(description,_) :: ListBlock(_,items,_) :: _ ->
-        let conseqs, idescalade =
-            mapFold parseConsequence idescalade items
-        { Text = toText description
-          Consequences = conseqs
-           }, idescalade
-    | Span(description,_) :: _ ->
-        { Text = toText description
-          Consequences = []
-           }, idescalade
-    | _ -> printfn "%A" ps
-           failwith "Nope"
-    
-
-and parseEscalades idescalade ps =
-    match ps with
-    | ListBlock(_, cases,_) :: _ ->
-        let items, id = mapFold parseEscalade idescalade cases
-        items, id + 1
-    | h :: _ ->
-        printfn "%A" h
-        [], idescalade
-    | [] ->
-        [], idescalade
-
-and parseConsequence (idescalade: int) ps : Consequence * int =
-    match ps with
-    | Span(description, _) :: tail 
-    | Paragraph( description , _) :: tail ->
-        let range= 
-            description |> List.tryPick ( function
-                | Literal(txt,_) ->
-                    let m = rangeRx.Match(txt)
-                    if m.Success then
-                        let min = int m.Groups[1].Value
-                        let max =
-                            if m.Groups[3].Success then
-                                int m.Groups[3].Value
-                            else
-                                min
-                        { Min = min
-                          Max = max} |> Some
-                    else
-                        None
-                | _ -> None
-            )
-        let escalades, idescalade' = parseEscalades idescalade tail 
-        
-        let score= 
-            match escalades with
-            | [] ->
-                description |> List.tryPick ( function
-                    | Literal(txt,_) ->
-                        let m = scoreRx.Match(txt)
-                        if m.Success then
-                            Some (Score (int m.Groups[1].Value))
-                        else
-                            None
-                    | _ -> None)
-            | _ -> Some (Escalade(idescalade, escalades))
-        let text =
-            description
-            |> List.map (function
-                | Literal(txt,r) when rangeRx.IsMatch(txt) ||scoreRx.IsMatch(txt) || escaladeRx.IsMatch(txt) -> 
-                    let txt2 = rangeRx.Replace(txt,"")
-                    let txt3 = scoreRx.Replace(txt2,"")
-                    Literal(escaladeRx.Replace(txt3,""),r)
-                | t -> t
-            ) 
-
-
-        { Range = range |> Option.defaultValue { Min = 0; Max = 0}
-          Text = toText text
-          Score = score |> Option.defaultValue (Score -9) }, idescalade'
-    | s :: tail -> failwith $"{ s.GetType().Name }" 
-    | [] -> failwith "Empty consequence"
-
-
-let parseReaction idescalade ps =
-    match ps with
-    | Span(description,_) :: ListBlock(_,items,_) ::_ ->
-        let conseqs, idescalade = 
-            items
-            |> List.fold (fun (result,id) item -> 
-            let conseq,id = parseConsequence id item
-            (conseq :: result), id
-             ) ([],idescalade)
-        { Text = toText description
-          Consequences = List.rev conseqs
-        }, idescalade
-    | [ Span(description,_) ] ->
-        { Text = toText description
-          Consequences = []}, idescalade
+let escaladeLinkRx = System.Text.RegularExpressions.Regex(@"\[(.*)\]")
 
 let parseTitle (spans: MarkdownSpans) =
     (System.Text.StringBuilder(), spans)
@@ -995,17 +888,165 @@ let parseTitle (spans: MarkdownSpans) =
     |> string
     |> fun s -> s.Trim()
 
+let tryParseLink (text: string) =
+    let m = escaladeLinkRx.Match(text)
+    if m.Success then
+        Some m.Groups[1].Value
+    else
+        None
+
+type ConsequenceMd = MarkdownSpans * MarkdownParagraphs
+type ReactionMd = MarkdownSpans * ConsequenceMd list
+
+let rec parseEscalade (description, items) : Reaction option =
+    let title = parseTitle description
+    match tryParseLink title with
+    | None ->
+        let conseqs = List.map (parseConsequence Map.empty) items
+        Some
+            { Title = title
+              Text = toText description
+              Consequences = conseqs }
+    | Some _ -> None
+
+and extractEscalade ps =
+    match ps with
+    | Span(description,_) :: ListBlock(_,items,_) :: _ ->
+        description, List.map extractConsequence items
+    | Span(description,_) :: _ ->
+        description, []
+    | _ -> failwith "Invalid escalade format"
+    
+
+and extractEscalades ps =
+    match ps with
+    | ListBlock(_, cases,_) :: _ ->
+        List.map extractEscalade cases
+    | h :: _ ->
+        failwith $"Invalid escalades format {h.GetType().Name}"
+    | [] ->
+        []
+
+and extractConsequence ps : ConsequenceMd =
+    match ps with
+    | Span(description, _) :: tail 
+    | Paragraph( description , _) :: tail ->
+        description, tail
+    | s :: _ -> failwith $"{ s.GetType().Name }" 
+    | [] -> failwith "Empty consequence"
+
+and parseConsequence escalades ((description, escaladesMd): ConsequenceMd)  : Consequence =
+    let range= 
+        description |> List.tryPick ( function
+            | Literal(txt,_) ->
+                let m = rangeRx.Match(txt)
+                if m.Success then
+                    let min = int m.Groups[1].Value
+                    let max =
+                        if m.Groups[3].Success then
+                            int m.Groups[3].Value
+                        else
+                            min
+                    { Min = min
+                      Max = max} |> Some
+                else
+                    None
+            | _ -> None
+        )
+    let escaladeKeys =
+        escaladesMd
+        |> extractEscalades
+        |> List.choose (fun (description,_) ->
+            let title = parseTitle description
+            match tryParseLink title with
+            | None -> 
+                Map.tryFindKey (fun _ e -> e.Title = title) escalades
+            | Some link ->
+                Map.tryFindKey (fun _ e -> e.Title.Contains link) escalades
+        )
+
+    
+    let score= 
+        match escaladeKeys with
+        | [] ->
+            description |> List.tryPick ( function
+                | Literal(txt,_) ->
+                    let m = scoreRx.Match(txt)
+                    if m.Success then
+                        Some (Score (int m.Groups[1].Value))
+                    else
+                        None
+                | _ -> None)
+        | _ -> Some (Escalade(escaladeKeys))
+    let text =
+        description
+        |> List.map (function
+            | Literal(txt,r) when rangeRx.IsMatch(txt) ||scoreRx.IsMatch(txt) || escaladeRx.IsMatch(txt) -> 
+                let txt2 = rangeRx.Replace(txt,"")
+                let txt3 = scoreRx.Replace(txt2,"")
+                Literal(escaladeRx.Replace(txt3,""),r)
+            | t -> t
+        ) 
+
+
+    { Range = range |> Option.defaultValue { Min = 0; Max = 0}
+      Text = toText text
+      Score = score |> Option.defaultValue (Score -9) }
+
+
+
+
+/// extract reaction * consequence() 
+let extractReaction ps : ReactionMd =
+    match ps with
+    | Span(description,_) :: ListBlock(_,items,_) ::_ ->
+        description, List.map extractConsequence items
+    | [ Span(description,_) ] ->
+        description, []
+
+
+let parseReaction escalades (description, items) =
+    let conseqs = List.map (parseConsequence escalades) items 
+    { Title = parseTitle description
+      Text = toText description
+      Consequences = conseqs
+    }
+
+
+
+let extractReactions ps : ReactionMd list * MarkdownParagraphs =
+    match ps with
+    | ListBlock(_, items,_) :: tail ->
+        List.map extractReaction items, tail
+    | tail ->  [], tail
+
+let escaladeId (i: int) =
+    char(int 'A' + i)            
+
 let parseSituations (dice: int seq) (md : MarkdownDocument) = 
-    let rec loop id idescalade (edice: IEnumerator<int>) ps result =
+    let rec loop id (edice: IEnumerator<int>) ps result =
         match ps with
         | Heading(2, title,_) :: Paragraph(txtSituation,_) :: tail ->
             
-            let (reactions, idescalade), tail =
-                match tail with
-                | ListBlock(_, items,_) :: rest ->
-                    mapFold parseReaction idescalade items, rest
-                | _ ->  ([], idescalade), tail
+            let reactionsMd, tail = extractReactions tail
+
+
+            let escalades =
+                [ for _,conseqsMd in reactionsMd do
+                    for _,escaladesMd in conseqsMd do
+                        for (d,cs) in extractEscalades escaladesMd do
+                            
+                            match parseEscalade (d, cs) with
+                            | Some e -> e
+                            | None -> ()
+                ]
+
+
+                |> Seq.mapi (fun i e -> escaladeId i,e)
+                |> Map.ofSeq
             
+            let reactions = List.map (parseReaction escalades) reactionsMd
+
             let situation =
                 { Id = id
                   Title = parseTitle title
@@ -1026,17 +1067,19 @@ let parseSituations (dice: int seq) (md : MarkdownDocument) =
                     edice.MoveNext() |> ignore
                     edice.Current
                   Text = toText txtSituation
-                  Reactions = reactions } 
+                  Reactions = reactions
+                  Escalades = escalades
+                   } 
 
-            loop (id+1) idescalade edice tail (situation :: result)
+            loop (id+1) edice tail (situation :: result)
         | [] -> List.rev result
         | head :: tail ->
-            loop id idescalade edice tail result
+            loop id edice tail result
 
     use edice = dice.GetEnumerator()
-    loop 1 1 edice md.Paragraphs []
+    loop 1 edice md.Paragraphs []
 
-let renderConsequence  (reaction: Reaction) =
+let renderConsequence (reaction: Reaction) =
             [ for consequence in reaction.Consequences do
                 if consequence.Range.Min = consequence.Range.Max then
                     accent Bold, $"%d{consequence.Range.Min} : "
@@ -1050,7 +1093,10 @@ let renderConsequence  (reaction: Reaction) =
                     Bold ++ Color.red, $" (-%d{-score})\n"
                 | Score _ ->
                     Bold ++ Color.yellow, $" (0)\n"
-                | Escalade(n, _) -> accent Bold , $" (voir Escalade %d{n})\n"
+                | Escalade(ids) ->
+                    let list = ids |> List.map string |> String.concat ""
+                    
+                    accent Bold , $" (voir Escalade %s{list})\n"
             ]
 let renderSituation situation mundial futura builder =
     Situation.verso situation.Dice mundial builder
@@ -1065,23 +1111,18 @@ let renderSituation situation mundial futura builder =
         Reaction.verso situation.Id situation.Color (i+1, count) mundial futura consequences builder
 
     let escalades = 
-        [ for reaction in situation.Reactions do
-            for conseq in reaction.Consequences do
-                match conseq.Score with
-                | Escalade(n,es) ->
-                    let count = es.Length
-                    for i,e in es |> Seq.indexed do
-                        n,(i+1, count), e
-                | _ -> ()
+        let count = Map.count situation.Escalades
+        [ for i,(k,e) in situation.Escalades |> Map.toSeq |> Seq.indexed do
+            (i+1, count), k, e
         ]
 
-    for num, (i,count), escalade in escalades do
+    for (i,count),k, escalade in escalades do
         let text = escalade.Text |> List.map (fun (s,t) -> {s with FontStyle = match s.FontStyle with Bold -> Regular | x -> x },t)
-        Escalade.recto num situation.Color mundial futura text builder
+        Escalade.recto situation.Id k situation.Color mundial futura text builder
 
         let consequences = renderConsequence escalade
 
-        Escalade.verso num situation.Color (i, count) mundial futura consequences builder
+        Escalade.verso situation.Id k situation.Color (i, count) mundial futura consequences builder
 
 let renderSituations situations mundial futura builder=
     for situation in situations do
@@ -1174,9 +1215,10 @@ let situationScore situation =
                     match cons.Score with
                     | Score n -> 
                         reactionProba * cons.Range.Probability * decimal n
-                    | Escalade(_,es) ->
+                    | Escalade(es) ->
                         let escaladeReactionProba = 1m / decimal es.Length
-                        for reac in es do
+                        for k in es do
+                            let reac = situation.Escalades[k]
                             for c in reac.Consequences do
                                 for j in c.Range.Min .. c.Range.Max do
                                     match c.Score with
@@ -1188,24 +1230,15 @@ let situationScore situation =
     scores |> List.sum
 
 let situationCards situation =
-    [   1
-        for reaction in situation.Reactions do
-            1
-            for cons in reaction.Consequences do
-                    match cons.Score with
-                    | Score n -> ()
-                    | Escalade(_,es) ->
-                        es.Length
-    ]
-    |> List.sum
+    1 + situation.Reactions.Length + situation.Escalades.Count
+
 let situationEscalades situation =
     seq {
         for reaction in situation.Reactions do
             for cons in reaction.Consequences do
                     match cons.Score with
                     | Score n -> ()
-                    | Escalade(_,_) ->
-                        1
+                    | Escalade(_) -> 1
     } |> Seq.sum
 
 let cut len (s: string) =
@@ -1261,21 +1294,8 @@ let check (situations: Situation list) =
 
                         for cons in reaction.Consequences do
                             match cons.Score with
-                            | Escalade(n, es) ->
-                                for escalade in es do
-                                    if escalade.Text = [] then
-                                        warn $"  [escalade {n}] texte manquant"
-                                    checkRanges $"escalade {n}" escalade
-                                    for c in escalade.Consequences do
-                                        match c.Score with
-                                        | Score n ->
-                                            if n = -9 then
-                                                warn $"  [reaction {i+1}] score manquant \x1b[38;2;128;128;128m/ {textToString  c.Text |> cut 40 }"
-                                            elif n > 3 then
-                                                warn $"  [reaction {i+1}] score trop grand ({n}) \x1b[38;2;128;128;128m/ {textToString  c.Text |> cut 40 }"
-                                            elif n < -3 then
-                                                warn $"  [reaction {i+1}] score trop petit ({n}) \x1b[38;2;128;128;128m/ {textToString  c.Text |> cut 40 }"
-                                        | _ -> failwith "Escalade niveau 2"
+                            | Escalade(es) -> ()
+
                             | Score n -> 
                                 if n = -9 then
                                     warn $"  [reaction {i+1}] score manquant \x1b[38;2;128;128;128m/ {textToString  cons.Text |> cut 40 }"
@@ -1284,7 +1304,20 @@ let check (situations: Situation list) =
                                 elif n < -3 then
                                     warn $"  [reaction {i+1}] score trop petit ({n}) \x1b[38;2;128;128;128m/ {textToString  cons.Text |> cut 40 }"
                                 
-
+                    for k,escalade in situation.Escalades |> Map.toSeq do
+                        if escalade.Text = [] then
+                            warn $"  [escalade {k}] texte manquant"
+                        checkRanges $"escalade {k}" escalade
+                        for c in escalade.Consequences do
+                            match c.Score with
+                            | Score n ->
+                                if n = -9 then
+                                    warn $"  [escalade {k}] score manquant \x1b[38;2;128;128;128m/ {textToString  c.Text |> cut 40 }"
+                                elif n > 3 then
+                                    warn $"  [escalade {k}] score trop grand ({n}) \x1b[38;2;128;128;128m/ {textToString  c.Text |> cut 40 }"
+                                elif n < -3 then
+                                    warn $"  [escalade {k}] score trop petit ({n}) \x1b[38;2;128;128;128m/ {textToString  c.Text |> cut 40 }"
+                            | _ -> failwith "Escalade niveau 2"
                 let result = 
                     if errors.Count = 0 then
                         let score = situationScore situation
