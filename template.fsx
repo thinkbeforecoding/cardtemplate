@@ -1411,7 +1411,7 @@ let check (situations: Situation list) =
 fsi.ShowDeclarationValues <- false
 let situations = parse @"situations.md"
 check situations
-render (situations |> List.filter (fun s -> s.Title.Contains("main aux fesses")))
+render situations
 
 // File.ReadAllText("Situations.md") |> cleanMd
 // |> fun t -> File.WriteAllText("Sit.txt", t)
