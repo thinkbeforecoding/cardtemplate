@@ -1237,10 +1237,13 @@ let check (situations: Situation list) =
                     if List.contains 0 ranges then
                         warn $"  [{name}] pourcentage non spécifée \x1b[38;2;128;128;128m/ { textToString reaction.Text |> cut 40}"
 
-                    let missing = (set ranges  - set [1..10]) |> Set.remove 0
+                    let missing = (set [1..10] - set ranges)
                     if not missing.IsEmpty then
-                        for n in missing do
-                            warn $"  [{name}] pourcentage {n} manquant \x1b[38;2;128;128;128m/ { textToString reaction.Text |> cut 40}"
+                        if missing = set [1..10] then
+                            warn $"  [{name}] pourcentages manquants \x1b[38;2;128;128;128m/ { textToString reaction.Text |> cut 40}"
+                        else
+                            let m = missing |> Seq.map string |> String.concat ", "
+                            warn $"  [{name}] pourcentages {m} manquants \x1b[38;2;128;128;128m/ { textToString reaction.Text |> cut 40}"
                     let multi = ranges |> List.countBy id |> List.filter (fun (_,c) -> c > 1) |> List.map fst
                     if not multi.IsEmpty then
                         for n in multi do
