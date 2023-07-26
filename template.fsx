@@ -589,7 +589,7 @@ module Situation =
                         let size = getSize m
                         let pos = getPos m
                         let font = page.GetFonts(mundial)
-                        let text = split font [ st Regular, $"%d{number}"] size 1m (decimal page.PageSize.Width)
+                        let text = split font [ st Bold, $"%d{number}"] size 1m (decimal page.PageSize.Width)
 
                         rects.Add(pos, size)
 
@@ -625,7 +625,7 @@ module Situation =
                 | ops & InnerText(txt) when txt.StartsWith("SITUATION") ->
                     let size =  getTextMatrix ops  |> getSize
                     let font = page.GetFonts(mundial)
-                    let text = split font [ st Regular, $"SITUATION %d{num}"] size 1m (decimal page.PageSize.Width)
+                    let text = split font [ st Bold, $"SITUATION %d{num}"] size 1m (decimal page.PageSize.Width)
 
                     ops
                     |> centerPage src 
@@ -658,7 +658,7 @@ module Reaction =
                 | ops & InnerText(txt) when txt.StartsWith("RÉACTION") ->
                     let size =  getTextMatrix ops  |> getSize
                     let font = page.GetFonts(mundial)
-                    let text = split font [ st Regular, $"RÉACTION S%d{num}"] size 1m (decimal page.PageSize.Width)
+                    let text = split font [ st Bold, $"RÉACTION S%d{num}"] size 1m (decimal page.PageSize.Width)
 
                     ops
                     |> centerPage src 
@@ -691,7 +691,7 @@ module Reaction =
                 | ops & InnerText(txt) when txt.StartsWith("RÉACTION") ->
                     let size =  getTextMatrix ops  |> getSize
                     let font = page.GetFonts(mundial)
-                    let text = split font [ st Regular, $"RÉACTION S%d{num}"] size 1m (decimal page.PageSize.Width)
+                    let text = split font [ st Bold, $"RÉACTION S%d{num}"] size 1m (decimal page.PageSize.Width)
 
                     ops
                     |> centerPage src 
@@ -714,19 +714,17 @@ module Reaction =
                     |> changeText page lines Left Midle accent)
                     @ [ setColor accent ]
 
-                | ops & InnerText(txt) when txt = "N" ->
+                | ops & InnerText(txt) when txt = "|" ->
                     let font = page.GetFonts(mundial)
                     let size = getTextMatrix ops |> getSize 
-                    let lines = split font [ st Regular, $"%d{reaction}" ] size 1m (decimal page.PageSize.Width)
+                    let lines =
+                        split font [
+                            st Bold, $"%d{reaction}" 
+                            st Regular, " | "
+                            st Bold, $"%d{count}" ]
+                                size 1m (decimal page.PageSize.Width)
                     ops |> changeText page lines Left Top accent
                         |> changeMatrix (translate 2m 0m)
-                | ops & InnerText(txt) when txt = "X" ->
-                    let font = page.GetFonts(mundial)
-                    let size = getTextMatrix ops |> getSize 
-                    let lines = split font [ st Regular, $"%d{count}" ] size 1m (decimal page.PageSize.Width)
-                    ops |> changeText page lines Left Top accent
-                | ops & InnerText(txt) when txt = "|" ->
-                    ops 
                 | _ -> []
             )
 
@@ -747,7 +745,7 @@ module Escalade =
                 | ops & InnerText(txt) when txt.StartsWith("ESCALADE") ->
                     let size =  getTextMatrix ops  |> getSize
                     let font = page.GetFonts(mundial)
-                    let text = split font [ st Regular, $"ESCALADE %d{num} %c{k}"] size 1m (decimal page.PageSize.Width)
+                    let text = split font [ st Bold, $"ESCALADE %d{num} %c{k}"] size 1m (decimal page.PageSize.Width)
 
                     ops
                     |> centerPage src 
@@ -780,7 +778,7 @@ module Escalade =
                 | ops & InnerText(txt) when txt.StartsWith("ESCALADE") ->
                     let size =  getTextMatrix ops  |> getSize
                     let font = page.GetFonts(mundial)
-                    let text = split font [ st Regular, $"ESCALADE %d{num} %c{k}"] size 1m (decimal page.PageSize.Width)
+                    let text = split font [ st Bold, $"ESCALADE %d{num} %c{k}"] size 1m (decimal page.PageSize.Width)
 
                     ops
                     |> centerPage src 
@@ -803,19 +801,16 @@ module Escalade =
                     |> changeText page lines Left Midle accent)
                     @ [ setColor accent ]
 
-                | ops & InnerText(txt) when txt = "N" ->
-                    let font = page.GetFonts(mundial)
-                    let size = getTextMatrix ops |> getSize 
-                    let lines = split font [ st Regular, $"%d{reaction}" ] size 1m (decimal page.PageSize.Width)
-                    ops |> changeText page lines Left Top accent
-                        |> changeMatrix (translate 2m 0m)
-                | ops & InnerText(txt) when txt = "X" ->
-                    let font = page.GetFonts(mundial)
-                    let size = getTextMatrix ops |> getSize 
-                    let lines = split font [ st Regular, $"%d{count}" ] size 1m (decimal page.PageSize.Width)
-                    ops |> changeText page lines Left Top accent
                 | ops & InnerText(txt) when txt = "|" ->
-                    ops 
+                    let font = page.GetFonts(mundial)
+                    let size = getTextMatrix ops |> getSize 
+                    let lines =
+                        split font [ 
+                                st Bold, $"%d{reaction}" 
+                                st Regular, $" | " 
+                                st Bold, $"%d{count}" 
+                            ] size 1m (decimal page.PageSize.Width)
+                    ops |> changeText page lines Center Top accent
                 | _ -> []
             )
 
@@ -1096,7 +1091,7 @@ let renderConsequence (reaction: Reaction) =
                 | Escalade(ids) ->
                     let list = ids |> List.map string |> String.concat ""
                     
-                    accent Bold , $" (voir Escalade %s{list})\n"
+                    accent Bold , $" (Escalade %s{list})\n"
             ]
 let renderSituation situation mundial futura builder =
     Situation.verso situation.Dice mundial builder
@@ -1129,7 +1124,7 @@ let renderSituations situations mundial futura builder=
         renderSituation situation mundial futura builder
 let rmdRx = System.Text.RegularExpressions.Regex(@"(\s*)(\*\*|_)( *)")
 let punctRx = System.Text.RegularExpressions.Regex(@"(\s*)(\.\.\.|\.|,|\?[!?]?|\![!?]?|;|:|')( *)")
-let quoteRx = System.Text.RegularExpressions.Regex(@"[""“”«]\s*([^""“”»]*?)\s*[""“”»] *")
+let quoteRx = System.Text.RegularExpressions.Regex(@"[""“”«]\s*([^""“”»]*?)\s*[""“”»]( +)?")
 let normSpaceRx = System.Text.RegularExpressions.Regex(@"(\*|_) +")
 
 
@@ -1155,7 +1150,14 @@ let cleanMd (md: string) =
             | _ -> m.Value )
         )
     let md4 =
-       quoteRx.Replace(md3, (fun m -> "_«\xA0" + m.Groups[1].Value + "\xA0»_"))
+       quoteRx.Replace(md3, (fun m -> 
+
+        if m.Groups[2].Success then
+            "_«\xA0" + m.Groups[1].Value + "\xA0»_ "
+        else
+            "_«\xA0" + m.Groups[1].Value + "\xA0»_"
+            )
+        )
     let md5 =
         normSpaceRx.Replace(md4, (fun m -> m.Groups[1].Value + " "))
     md5
@@ -1163,7 +1165,8 @@ let cleanMd (md: string) =
 let futuraBytes = File.ReadAllBytes(@"..\Fonts\Futura PT\FuturaPTBook.ttf")
 let futuraIBytes = File.ReadAllBytes(@"..\Fonts\Futura PT\FuturaPTBookOblique.ttf")
 let futuraBBytes = File.ReadAllBytes(@"..\Fonts\Futura PT\FuturaPTMedium.ttf")
-let mundialBytes = File.ReadAllBytes(@"..\Fonts\Mundial\MundialBold.ttf")
+let mundialLBytes = File.ReadAllBytes(@"..\Fonts\Mundial\MundialLight.ttf")
+let mundialBBytes = File.ReadAllBytes(@"..\Fonts\Mundial\MundialBold.ttf")
 
 let parse path =
     let mdText = 
@@ -1184,10 +1187,10 @@ let parse path =
 let render situations =
     let builder = new PdfDocumentBuilder()
     let mundial = 
-        let font = builder.AddTrueTypeFont(mundialBytes)
+        let font = builder.AddTrueTypeFont(mundialLBytes)
         { AddedFonts.Regular = font
           Italic = font
-          Bold = font }
+          Bold = builder.AddTrueTypeFont(mundialBBytes) }
 
     let futura =
         { AddedFonts.Regular = builder.AddTrueTypeFont(futuraBytes)
@@ -1350,11 +1353,10 @@ let situations = parse @"situations.md"
 check situations
 render situations
 
-// situations[5].Reactions[0].Consequences[0].Score
 // File.ReadAllText("Situations.md") |> cleanMd
 // |> fun t -> File.WriteAllText("Sit.txt", t)
 
-let r = PdfDocument.Open(@"C:\Users\jchassaing\OneDrive\Transmissions\template\Test.pdf")
-r.GetPage(1).Operations |> printOps
+// let r = PdfDocument.Open(@"C:\Users\jchassaing\OneDrive\Transmissions\template\Test.pdf")
+// r.GetPage(1).Operations |> printOps
 
 
