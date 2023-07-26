@@ -150,7 +150,8 @@ type TextSpan =
 
 type Line =
     { Spans: TextSpan list
-      Size: Size }
+      Size: Size
+      TotalWordWidth: decimal }
 
 let getText (textToFind: string) (ops: IGraphicsStateOperation list) : IGraphicsStateOperation list =
     let rec findStart (ops: IGraphicsStateOperation list)  =
@@ -204,13 +205,14 @@ type HorizontalAlign =
     | Left
     | Center
     | Right
+    | Justify
 
 let setColor color =
     match color with
     | Rgb color -> SetNonStrokeColorDeviceRgb(color.R, color.G, color.B) :> IGraphicsStateOperation
     | Cmyk color -> SetNonStrokeColorDeviceCmyk(color.C, color.M, color.Y, color.K)
 
-let changeText (page: PdfPageBuilder) (lines: Line list) halign valign accent (ops: IGraphicsStateOperation list) =
+let changeText (page: PdfPageBuilder) (lines: Line list) divWidth halign valign accent (ops: IGraphicsStateOperation list) =
     let renderSpans matrix spans =
         match spans with
         | head :: rest ->
@@ -233,6 +235,36 @@ let changeText (page: PdfPageBuilder) (lines: Line list) halign valign accent (o
             ] 
         | [] -> []
 
+    let renderSpansJustified matrix width (line: Line) =
+        [
+            if line.Spans <> [] then
+                SetTextMatrix(matrix) :> IGraphicsStateOperation
+
+            let spaces = 
+                line.Spans |> Seq.sumBy (fun span -> span.Text |> Seq.sumBy (function ' ' -> 1| _ -> 0) )
+
+            let remainingWidth = width - line.TotalWordWidth
+            let spaceWidth = if spaces <> 0 then 110m * remainingWidth / decimal spaces else 0m
+            printfn "%d %f" spaces spaceWidth
+            
+
+            for span in line.Spans do
+                SetFontAndSize(span.Font.Name, 1m) 
+                match span.Color with
+                | DefaultColor -> ()
+                | Color color -> setColor color
+                | Accent -> setColor accent
+                let words = span.Text.Split(' ', System.StringSplitOptions.None)
+
+                ShowTextsWithPositioning(
+                    [ for word in words do
+                        if word.Length > 0 then
+                            StringToken(System.Text.Encoding.UTF8.GetString(page.UseLetters(word,span.Font.Font)))
+                        NumericToken(-spaceWidth)
+                    ])
+                
+        ]
+
     let ys = lines |> List.scan (fun y l -> y+l.Size.Height) 0m 
     let ylines = List.zip (List.truncate lines.Length ys) lines
     let m = getTextMatrix ops
@@ -249,14 +281,21 @@ let changeText (page: PdfPageBuilder) (lines: Line list) halign valign accent (o
         | ShowTextsWithPositioning(_,_)
         | ShowText _ ->
             [
+                let last = List.length ylines - 1 
                 SetTextLeading(1m) :> IGraphicsStateOperation
-                for y,line in ylines do 
+                for i,(y,line) in ylines |> Seq.indexed do 
                     let x =
                         match halign with
-                        | Left -> 0m
+                        | Left
+                        | Justify -> 0m
                         | Center -> line.Size.Width / 2m
                         | Right -> line.Size.Width
-                    yield! renderSpans (translate -x (top-y) m) line.Spans
+
+                    match halign with
+                    | Justify when i<>last ->
+                        yield! renderSpansJustified (translate -x (top-y) m) divWidth line
+                    | _ ->
+                        yield! renderSpans (translate -x (top-y) m) line.Spans
             ]
         | :? SetTextMatrix -> []
         | op -> [op]
@@ -355,8 +394,10 @@ type PdfPageBuilder with
 
 
 type LineContext = 
-    { Span: decimal
-      Word: decimal
+    { SpanWidth: decimal
+      WordWidth: decimal
+      SpaceWidth: decimal
+      LineWordWidth: decimal
       LineStart: int
       WordStart: int
       StyleStart: int
@@ -370,7 +411,7 @@ type LineContext =
       Lines: Line list
       Scale: Size
       ParagraphSpacing: decimal
-      Max: decimal
+      MaxWidth: decimal
     }
 
 module LineContext =
@@ -378,11 +419,12 @@ module LineContext =
         let sp =
             { Font = Fonts.getStyle ctx.Style.FontStyle ctx.Fonts
               Color = ctx.Style.Color
-              Text = ctx.Text.Substring(ctx.StyleStart, ctx.Index - ctx.StyleStart)}
+              Text = ctx.Text.Substring(ctx.StyleStart, ctx.Index - ctx.StyleStart).TrimEnd()}
         let line = 
             { Spans = List.rev (sp :: ctx.Line) 
-              Size = { Width = ctx.Span + ctx.Word 
-                       Height = ctx.Scale.Height } }
+              Size = { Width = ctx.SpanWidth + ctx.WordWidth
+                       Height = ctx.Scale.Height }
+              TotalWordWidth = ctx.LineWordWidth + ctx.WordWidth } 
         (line :: ctx.Lines)
         |> List.rev
 
@@ -405,16 +447,20 @@ module LineContext =
 
     let addSpace w ctx =
         { ctx with
-            Span = ctx.Span + ctx.Word + w
-            Word = 0m
+            SpanWidth = ctx.SpanWidth + ctx.WordWidth 
+            SpaceWidth = ctx.SpaceWidth + w
+            LineWordWidth = ctx.LineWordWidth + ctx.WordWidth
+            WordWidth = 0m
             WordStart = ctx.Index+1
             Index = ctx.Index+1
         }
 
     let addNewLine ctx =
         { ctx with
-            Span = 0m
-            Word = 0m
+            SpanWidth = 0m
+            WordWidth = 0m
+            SpaceWidth = 0m
+            LineWordWidth = 0m
             LineStart = ctx.Index+1
             WordStart = ctx.Index+1
             StyleStart = ctx.Index + 1
@@ -424,24 +470,29 @@ module LineContext =
                 let sp =
                     { Font = Fonts.getStyle ctx.Style.FontStyle ctx.Fonts
                       Color = ctx.Style.Color
-                      Text = ctx.Text.Substring(ctx.StyleStart, ctx.Index - ctx.StyleStart)}
+                      Text = ctx.Text.Substring(ctx.StyleStart, ctx.Index - ctx.StyleStart).TrimEnd()}
                 let line = 
                     { Spans = List.rev (sp :: ctx.Line)
                       Size = 
-                        { Width = ctx.Span + ctx.Word
-                          Height = ctx.Scale.Height * ctx.ParagraphSpacing } }
+                        { Width = ctx.SpanWidth + ctx.WordWidth
+                          Height = ctx.Scale.Height * ctx.ParagraphSpacing }
+                      TotalWordWidth = ctx.LineWordWidth + ctx.WordWidth }
                 line :: ctx.Lines
         }
 
     let addChar w ctx =
         { ctx with
-            Word = ctx.Word + w
+            SpanWidth = ctx.SpanWidth + ctx.SpaceWidth
+            WordWidth = ctx.WordWidth + w 
+            SpaceWidth = 0m
             Index = ctx.Index+1
         }
 
     let cutLine ctx =
         { ctx with
-            Span = 0m
+            SpanWidth = 0m
+            SpaceWidth = 0m
+            LineWordWidth = 0m
             LineStart = ctx.WordStart
             StyleStart = ctx.WordStart
             Line = []
@@ -451,12 +502,13 @@ module LineContext =
                 let sp =
                     { Font = Fonts.getStyle ctx.Style.FontStyle ctx.Fonts
                       Color = ctx.Style.Color
-                      Text = ctx.Text.Substring(start, ctx.WordStart - start)}
+                      Text = ctx.Text.Substring(start, ctx.WordStart - start).TrimEnd()}
                 let line =
                     { Spans = List.rev (sp :: ctx.Line)
                       Size =
-                        { Width = ctx.Span
-                          Height = ctx.Scale.Height} }
+                        { Width = ctx.SpanWidth
+                          Height = ctx.Scale.Height}
+                      TotalWordWidth = ctx.LineWordWidth }
                 line :: ctx.Lines
 
         }
@@ -475,17 +527,18 @@ module LineContext =
             | false, _ -> 0m 
 
         let ctx2 = applyStyle style ctx 
-        let ctx3 =
-            if c = ' ' then
-                addSpace w ctx2
-            elif c = '\n' then
-                addNewLine ctx2 
-            else
-                addChar w ctx2 
-        if ctx3.Span + ctx3.Word > ctx3.Max then
-            cutLine ctx3 
+        if c = '\n' then
+            addNewLine ctx2
         else
-            ctx3
+            let ctx3 =
+                if ctx2.SpanWidth + ctx2.WordWidth + w > ctx2.MaxWidth then
+                    cutLine ctx2 
+                else
+                    ctx2
+            if c = ' ' then
+                addSpace w ctx3
+            else
+                addChar w ctx3 
         
 let rec split' ctx =
     if LineContext.hasNext ctx then
@@ -495,8 +548,10 @@ let rec split' ctx =
 
 let split'' (f: Fonts) text styles scale paragraphSpacing max = 
     let ctx = 
-        { Span = 0m
-          Word = 0m
+        { SpanWidth = 0m
+          WordWidth = 0m
+          SpaceWidth = 0m
+          LineWordWidth = 0m
           LineStart = 0
           WordStart = 0
           StyleStart = 0
@@ -507,7 +562,7 @@ let split'' (f: Fonts) text styles scale paragraphSpacing max =
           Fonts = f
           Scale = scale
           ParagraphSpacing = paragraphSpacing
-          Max = max
+          MaxWidth = max
           Line = []
 
           Lines = []
@@ -594,7 +649,7 @@ module Situation =
                         rects.Add(pos, size)
 
                         (ops
-                        |> changeText page text Center Top Color.black)
+                        |> changeText page text (decimal page.PageSize.Width) Center Top  Color.black)
                 | ops -> ops)
 
         page.CurrentStream.Operations.Clear()
@@ -629,15 +684,20 @@ module Situation =
 
                     ops
                     |> centerPage src 
-                    |> changeText page text Center Top accent
+                    |> changeText page text (decimal page.PageSize.Width) Center Top accent
 
 
                 | ops & InnerText(txt) when txt.StartsWith("Texte") ->
-                    let size = getTextMatrix ops |> getSize 
+                    let m = getTextMatrix ops
+                    let size = getSize m 
                     let font = page.GetFonts(futura)
                     let lines = split font text size 1.5m 180m
+                    let pos = getPos m
+                    let trimbox = src.Dictionary.Data[NameToken.TrimBox] |> rect
 
-                    ops |> changeText page lines Left Midle accent
+                    let width = decimal trimbox.Width - (pos.X - decimal trimbox.Left) * 2m //+ decimal trimbox.Left
+                    printfn "Div Width %f" width
+                    ops |> changeText page lines width Left Midle accent
                 | _ -> []
             )
 
@@ -662,7 +722,7 @@ module Reaction =
 
                     ops
                     |> centerPage src 
-                    |> changeText page text Center Top accent
+                    |> changeText page text (decimal page.PageSize.Width) Center Top accent
 
 
 
@@ -672,7 +732,7 @@ module Reaction =
                     let lines = split font text size 1.5m 180m 
                     ops
                     |> centerPage src
-                    |> changeText page lines Center Midle accent
+                    |> changeText page lines 180m Center Midle accent
                 | _ -> []
             )
 
@@ -695,7 +755,7 @@ module Reaction =
 
                     ops
                     |> centerPage src 
-                    |> changeText page text Center Top accent
+                    |> changeText page text (decimal page.PageSize.Width) Center Top accent
 
 
 
@@ -711,7 +771,7 @@ module Reaction =
 
                     (ops
                     |> changeMatrix (translate 0m -15m)
-                    |> changeText page lines Left Midle accent)
+                    |> changeText page lines width Left Midle accent)
                     @ [ setColor accent ]
 
                 | ops & InnerText(txt) when txt = "|" ->
@@ -723,7 +783,7 @@ module Reaction =
                             st Regular, " | "
                             st Bold, $"%d{count}" ]
                                 size 1m (decimal page.PageSize.Width)
-                    ops |> changeText page lines Left Top accent
+                    ops |> changeText page lines (decimal page.PageSize.Width) Center Top accent
                         |> changeMatrix (translate 2m 0m)
                 | _ -> []
             )
@@ -749,7 +809,7 @@ module Escalade =
 
                     ops
                     |> centerPage src 
-                    |> changeText page text Center Top accent
+                    |> changeText page text (decimal page.PageSize.Width) Center Top accent
 
 
 
@@ -759,7 +819,7 @@ module Escalade =
                     let lines = split font text size 1.5m 180m 
                     ops
                     |> centerPage src
-                    |> changeText page lines Center Midle accent
+                    |> changeText page lines 180m Center Midle accent
                 | _ -> []
             )
 
@@ -782,7 +842,7 @@ module Escalade =
 
                     ops
                     |> centerPage src 
-                    |> changeText page text Center Top accent
+                    |> changeText page text (decimal page.PageSize.Width) Center Top accent
 
 
 
@@ -798,7 +858,7 @@ module Escalade =
 
                     (ops
                     |> changeMatrix (translate 0m -15m)
-                    |> changeText page lines Left Midle accent)
+                    |> changeText page lines width Left Midle accent)
                     @ [ setColor accent ]
 
                 | ops & InnerText(txt) when txt = "|" ->
@@ -810,7 +870,7 @@ module Escalade =
                                 st Regular, $" | " 
                                 st Bold, $"%d{count}" 
                             ] size 1m (decimal page.PageSize.Width)
-                    ops |> changeText page lines Center Top accent
+                    ops |> changeText page lines (decimal page.PageSize.Width) Center Top accent
                 | _ -> []
             )
 
@@ -840,7 +900,7 @@ module Cards =
             member this.Percents = (this.Max + 1 - this.Min) * 10
             member this.Probability = decimal this.Percents / 100m
     and Score =
-        | Score of int
+        | Score of int*string
         | Escalade of char list
 
 
@@ -869,9 +929,8 @@ open System.Collections
 
 
 let rangeRx = System.Text.RegularExpressions.Regex(@"^\s*(\d+)(\s+à\s+(\d+))?\s*:\s*")
-let scoreRx = System.Text.RegularExpressions.Regex(@"\s*\(([+\-]?\d)\)\s*")
+let scoreRx = System.Text.RegularExpressions.Regex(@"\s*\(([+\-]?\d)([^)]*)\)\s*")
 let escaladeRx = System.Text.RegularExpressions.Regex(@"\(\s*voir\s+Escalade(\s+\$)?\s*\)")
-let escaladeLinkRx = System.Text.RegularExpressions.Regex(@"\[(.*)\]")
 
 let parseTitle (spans: MarkdownSpans) =
     (System.Text.StringBuilder(), spans)
@@ -883,26 +942,34 @@ let parseTitle (spans: MarkdownSpans) =
     |> string
     |> fun s -> s.Trim()
 
-let tryParseLink (text: string) =
-    let m = escaladeLinkRx.Match(text)
-    if m.Success then
-        Some m.Groups[1].Value
-    else
-        None
 
 type ConsequenceMd = MarkdownSpans * MarkdownParagraphs
 type ReactionMd = MarkdownSpans * ConsequenceMd list
 
+let textToString (text: (Style * string) list) =
+    let builder = System.Text.StringBuilder()
+    for _,t in text do
+        builder.Append(t) |> ignore
+    string builder
+
+let tryParseLink (description: MarkdownSpans) =
+    match description with
+    | IndirectLink(body,_,_,_) :: _ ->
+        let text = toText body
+        Some (textToString text)
+    | _ -> None
+
 let rec parseEscalade (description, items) : Reaction option =
-    let title = parseTitle description
-    match tryParseLink title with
-    | None ->
+    match tryParseLink description with
+    | Some _ -> None
+    | None -> 
+        let text = toText description
+        let title = textToString text
         let conseqs = List.map (parseConsequence Map.empty) items
         Some
             { Title = title
-              Text = toText description
+              Text = text
               Consequences = conseqs }
-    | Some _ -> None
 
 and extractEscalade ps =
     match ps with
@@ -918,7 +985,8 @@ and extractEscalades ps =
     | ListBlock(_, cases,_) :: _ ->
         List.map extractEscalade cases
     | h :: _ ->
-        failwith $"Invalid escalades format {h.GetType().Name}"
+        printfn $"Invalid escalades format %A{h}"
+        []
     | [] ->
         []
 
@@ -952,23 +1020,23 @@ and parseConsequence escalades ((description, escaladesMd): ConsequenceMd)  : Co
         escaladesMd
         |> extractEscalades
         |> List.choose (fun (description,_) ->
-            let title = parseTitle description
-            match tryParseLink title with
+            match tryParseLink description with
             | None -> 
+                let title = description |> toText |> textToString
                 Map.tryFindKey (fun _ e -> e.Title = title) escalades
             | Some link ->
-                Map.tryFindKey (fun _ e -> e.Title.Contains link) escalades
+                Map.tryFindKey (fun _ e -> e.Title.Contains (link.Trim())) escalades
         )
 
     
-    let score= 
+    let score = 
         match escaladeKeys with
         | [] ->
             description |> List.tryPick ( function
                 | Literal(txt,_) ->
                     let m = scoreRx.Match(txt)
                     if m.Success then
-                        Some (Score (int m.Groups[1].Value))
+                        Some (Score (int m.Groups[1].Value, m.Groups[2].Value))
                     else
                         None
                 | _ -> None)
@@ -986,12 +1054,11 @@ and parseConsequence escalades ((description, escaladesMd): ConsequenceMd)  : Co
 
     { Range = range |> Option.defaultValue { Min = 0; Max = 0}
       Text = toText text
-      Score = score |> Option.defaultValue (Score -9) }
+      Score = score |> Option.defaultValue (Score(-9,"")) }
 
 
 
 
-/// extract reaction * consequence() 
 let extractReaction ps : ReactionMd =
     match ps with
     | Span(description,_) :: ListBlock(_,items,_) ::_ ->
@@ -1002,8 +1069,9 @@ let extractReaction ps : ReactionMd =
 
 let parseReaction escalades (description, items) =
     let conseqs = List.map (parseConsequence escalades) items 
-    { Title = parseTitle description
-      Text = toText description
+    let text = toText description
+    { Title = textToString text
+      Text = text
       Consequences = conseqs
     }
 
@@ -1025,16 +1093,14 @@ let parseSituations (dice: int seq) (md : MarkdownDocument) =
             
             let reactionsMd, tail = extractReactions tail
 
-
-            let escalades =
+            let escaladesMd = 
                 [ for _,conseqsMd in reactionsMd do
                     for _,escaladesMd in conseqsMd do
-                        for (d,cs) in extractEscalades escaladesMd do
-                            
-                            match parseEscalade (d, cs) with
-                            | Some e -> e
-                            | None -> ()
-                ]
+                        yield! extractEscalades escaladesMd ]
+            let escalades =
+                escaladesMd
+                |> List.choose parseEscalade
+
 
 
                 |> Seq.mapi (fun i e -> escaladeId i,e)
@@ -1082,12 +1148,12 @@ let renderConsequence (reaction: Reaction) =
                     accent Bold, $"%d{consequence.Range.Min} à {consequence.Range.Max} : "
                 yield! consequence.Text |> List.map (fun (s,t) -> { Color = Color Color.black; FontStyle = match s.FontStyle with Bold -> Regular | x -> x },t)
                 match consequence.Score with
-                | Score score when score > 0 ->
-                    Bold ++ Color.green, $" (+%d{score})\n"
-                | Score score when score < 0 ->
-                    Bold ++ Color.red, $" (-%d{-score})\n"
-                | Score _ ->
-                    Bold ++ Color.yellow, $" (0)\n"
+                | Score (score,txt) when score > 0 ->
+                    Bold ++ Color.green, $" (+%d{score}%s{txt})\n"
+                | Score(score, txt) when score < 0 ->
+                    Bold ++ Color.red, $" (-%d{-score}%s{txt})\n"
+                | Score (_, txt) ->
+                    Bold ++ Color.yellow, $" (0%s{txt})\n"
                 | Escalade(ids) ->
                     let list = ids |> List.map string |> String.concat ""
                     
@@ -1216,7 +1282,7 @@ let situationScore situation =
           for reaction in situation.Reactions do
             for cons in reaction.Consequences do
                     match cons.Score with
-                    | Score n -> 
+                    | Score(n,_) -> 
                         reactionProba * cons.Range.Probability * decimal n
                     | Escalade(es) ->
                         let escaladeReactionProba = 1m / decimal es.Length
@@ -1225,7 +1291,7 @@ let situationScore situation =
                             for c in reac.Consequences do
                                 for j in c.Range.Min .. c.Range.Max do
                                     match c.Score with
-                                    | Score n ->
+                                    | Score(n,_) ->
                                        reactionProba * cons.Range.Probability *
                                         escaladeReactionProba * c.Range.Probability * decimal n
                                     | _ -> failwith "Les doubles escalades ne sont pas gérées"
@@ -1240,7 +1306,7 @@ let situationEscalades situation =
         for reaction in situation.Reactions do
             for cons in reaction.Consequences do
                     match cons.Score with
-                    | Score n -> ()
+                    | Score(_,_) -> ()
                     | Escalade(_) -> 1
     } |> Seq.sum
 
@@ -1249,12 +1315,6 @@ let cut len (s: string) =
         s.Substring(0,len-1) + "…"
     else
         s 
-
-let textToString (text: (Style* string) list) =
-    let builder = System.Text.StringBuilder()
-    for _,s in text do
-        builder.Append(s) |> ignore
-    string builder
 
 let check (situations: Situation list) =
     let checks =
@@ -1299,7 +1359,7 @@ let check (situations: Situation list) =
                             match cons.Score with
                             | Escalade(es) -> ()
 
-                            | Score n -> 
+                            | Score(n,_) -> 
                                 if n = -9 then
                                     warn $"  [reaction {i+1}] score manquant \x1b[38;2;128;128;128m/ {textToString  cons.Text |> cut 40 }"
                                 elif n > 3 then
@@ -1313,7 +1373,7 @@ let check (situations: Situation list) =
                         checkRanges $"escalade {k}" escalade
                         for c in escalade.Consequences do
                             match c.Score with
-                            | Score n ->
+                            | Score(n,_) ->
                                 if n = -9 then
                                     warn $"  [escalade {k}] score manquant \x1b[38;2;128;128;128m/ {textToString  c.Text |> cut 40 }"
                                 elif n > 3 then
@@ -1351,12 +1411,47 @@ let check (situations: Situation list) =
 fsi.ShowDeclarationValues <- false
 let situations = parse @"situations.md"
 check situations
-render situations
+render (situations |> List.filter (fun s -> s.Title.Contains("main aux fesses")))
 
 // File.ReadAllText("Situations.md") |> cleanMd
 // |> fun t -> File.WriteAllText("Sit.txt", t)
 
-// let r = PdfDocument.Open(@"C:\Users\jchassaing\OneDrive\Transmissions\template\Test.pdf")
-// r.GetPage(1).Operations |> printOps
+let rec find txt ps =
+    match ps with
+    | Heading(2, title,_) :: Paragraph(txtSituation,_) :: tail when (textToString (toText title)).Contains(txt: string) ->
+        ps
+    | head :: tail -> find txt tail
+    | [] -> []
 
 
+
+let ps = find "main aux fesses" (File.ReadAllText("situations.md") |> cleanMd |> Markdown.Parse ).Paragraphs
+// let r = PdfDocument.Open(@"C:\Users\jchassaing\OneDrive\Transmissions\template\Transmission(s)_Cartes Situation (Template).pdf")
+// let r = PdfDocument.Open(@"C:\Users\jchassaing\OneDrive\Transmissions\template\Result.pdf")
+// r.GetPage(2).Operations |> printOps
+
+
+
+let builder = new PdfDocumentBuilder()
+let futura =
+    { AddedFonts.Regular = builder.AddTrueTypeFont(futuraBytes)
+      Italic = builder.AddTrueTypeFont(futuraIBytes)
+      Bold = builder.AddTrueTypeFont(futuraBBytes) }
+
+let page = builder.AddPage(PageSize.A7)
+let font = page.GetFonts(futura)
+// let size = font.Regular.Font.GetFontMatrix() 
+split font [ st Regular, "x xxxxxxx" ] { Width = 9m; Height = 9m} 1.5m 30m
+
+let situation = situations |> List.find (fun s -> s.Title.Contains("main aux fesses"))
+situation.Title
+let escalades = situation.Escalades |> Map.toSeq |> Seq.map snd |> Seq.toList
+escalades |> List.length
+escalades |> List.distinct |> List.length
+
+escalades |> List.map (fun m -> m.Title) |> List.distinct 
+
+for e in escalades |> List.filter (fun m -> m.Title = "Je me tais pour ne pas envenimer la situation.") do
+    printfn $"{e.Title}"
+    for c in e.Consequences do
+        printfn $"  {c.Range.Min} => {c.Range.Max} {cut 40 (textToString c.Text)} ({c.Score})"
