@@ -1386,9 +1386,8 @@ let situations = parse @"situations.md"
 check situations
 |> render
 // render situations
-render (situations |> List.filter (fun m -> m.Title.Contains("pissotière") ))
+// render (situations |> List.filter (fun m -> m.Title.Contains("pissotière") ))
 
-let s = (situations |> List.filter (fun m -> m.Title.Contains("pissotière") ))
 // File.ReadAllText("Situations.md") |> cleanMd
 // |> fun t -> File.WriteAllText("Sit.txt", t)
 
