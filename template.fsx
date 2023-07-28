@@ -1017,6 +1017,7 @@ let extractReaction ps : ReactionMd =
         description, List.map extractConsequence items
     | [ Span(description,_) ] ->
         description, []
+    | _ -> failwith $"Format de réaction invalide:\n%A{ps}"
 
 
 let parseReaction escalades (description, items) =
